@@ -12,7 +12,6 @@
     canvas.style.width = Math.round(BASE_W * scale) + 'px';
     canvas.style.height = Math.round(BASE_H * scale) + 'px';
   }
-
   // --- Infinite Walls (vertical) generator and starters ---
   function startInfiniteWalls() {
     // Reset state
@@ -109,34 +108,9 @@
   const INF_POWERUP_CHANCE_BASE = 0.08; // base chance for powerup in infinite
   const INF_POWERUP_CHANCE_SLOPE = 0.08; // reduction with progress
 
-  // Input
-  const keys = new Set();
-  // Bind on-screen mobile controls if present
-  function bindMobileControls() {
-    const leftBtn = document.getElementById('btn-left');
-    const rightBtn = document.getElementById('btn-right');
-    const jumpBtn = document.getElementById('btn-jump');
-    function attach(btn, keyDown, keyUp) {
-      if (!btn) return;
-      const down = (ev) => { ev.preventDefault(); keys.add(keyDown); btn.classList.add('active'); btn.setPointerCapture && btn.setPointerCapture(ev.pointerId || 1); };
-      const up = (ev) => { ev.preventDefault(); keys.delete(keyDown); if (keyUp) keys.delete(keyUp); btn.classList.remove('active'); };
-      btn.addEventListener('pointerdown', down, { passive: false });
-      btn.addEventListener('pointerup', up, { passive: false });
-      btn.addEventListener('pointercancel', up, { passive: false });
-      btn.addEventListener('pointerleave', up, { passive: false });
-    }
-    attach(leftBtn, 'ArrowLeft');
-    attach(rightBtn, 'ArrowRight');
-    // Make jump map to both Up and Space so our key code sees it either way
-    if (jumpBtn) {
-      jumpBtn.addEventListener('pointerdown', (ev) => { ev.preventDefault(); keys.add('ArrowUp'); keys.add(' '); jumpBtn.classList.add('active'); }, { passive: false });
-      const up = (ev) => { ev.preventDefault(); keys.delete('ArrowUp'); keys.delete(' '); jumpBtn.classList.remove('active'); };
-      jumpBtn.addEventListener('pointerup', up, { passive: false });
-      jumpBtn.addEventListener('pointercancel', up, { passive: false });
-      jumpBtn.addEventListener('pointerleave', up, { passive: false });
-    }
-  }
-  bindMobileControls();
+  // Input (shared via movement.js)
+  const keys = (window && window.keys) ? window.keys : new Set();
+  if (typeof window !== 'undefined') window.keys = keys;
   function startFromTitle() {
     if (!onTitle) return;
     // apply selected mode from start screen
