@@ -509,19 +509,7 @@
     },
   ];
 
-  // After LEVELS is defined, expose getter for static levels
-  // Normal mode now uses an interleaving of LEVELS and WALL_LEVELS by default.
-  function getLevels() {
-    const A = LEVELS;
-    const B = WALL_LEVELS;
-    const out = [];
-    const max = Math.max(A.length, B.length);
-    for (let i = 0; i < max; i++) {
-      if (i < A.length) out.push(A[i]);
-      if (i < B.length) out.push(B[i]);
-    }
-    return out;
-  }
+  // getLevels provided by levels.js
 
   // Shop -> Mode selection
   function selectMode(i) {
@@ -2000,6 +1988,11 @@
     requestAnimationFrame(loop);
   }
 
+  // Expose levels for levels.js
+  if (typeof window !== 'undefined') {
+    window.LEVELS = LEVELS;
+    window.WALL_LEVELS = WALL_LEVELS;
+  }
   // Initialize title playground and start loop (title screen shown first)
   setupTitleDemo();
   loop();
