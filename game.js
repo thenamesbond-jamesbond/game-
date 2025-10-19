@@ -1,7 +1,71 @@
- 
-(() => {
+    (() => {
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
+
+  // Mobile/tablet: responsive canvas scaling to fit screen while preserving aspect
+  const BASE_W = canvas.width;
+  const BASE_H = canvas.height;
+  function updateCanvasScale() {
+    const vw = window.innerWidth || document.documentElement.clientWidth;
+    const vh = window.innerHeight || document.documentElement.clientHeight;
+    const scale = Math.max(0.5, Math.min(vw / BASE_W, vh / BASE_H));
+    canvas.style.width = Math.round(BASE_W * scale) + 'px';
+    canvas.style.height = Math.round(BASE_H * scale) + 'px';
+  }
+
+  // --- Infinite Walls (vertical) generator and starters ---
+  function startInfiniteWalls() {
+    // Reset state
+    infWallsPlatforms = [];
+    builderBlocks = [];
+    coinsCollected = 0; totalCoins = 0; // coins not used here yet
+    // Place player near bottom center
+    player.x = W/2 - player.w/2;
+    player.y = H - 80;
+    player.vx = 0; player.vy = 0; player.onGround = false;
+    cameraX = 0; cameraY = player.y - 200;
+    // Base floor
+    infWallsPlatforms.push({ x: 0, y: H - 20, w: W, h: 40, t: 'normal' });
+    wallsLastPlatY = H - 80;
+    wallsLastPlatX = W/2 - 60;
+    infWallsSpawnY = H - 240; // start generating upwards from here (decreasing y)
+    // seed a couple ledges
+    infWallsPlatforms.push({ x: wallsLastPlatX - 120, y: H - 140, w: 100, h: 16, t: 'normal' });
+    infWallsPlatforms.push({ x: wallsLastPlatX + 140, y: H - 200, w: 100, h: 16, t: 'normal' });
+  }
+
+  function generateInfiniteWallsChunk() {
+    // Generate a vertical segment from infWallsSpawnY downwards by INF_WALLS_CHUNK_H
+    const startY = infWallsSpawnY;
+    const endY = startY - INF_WALLS_CHUNK_H;
+    // Add paired vertical columns to bounce between
+    const colW = 20;
+    const gap = 140 + Math.random()*40;
+    const center = W/2 + (Math.random()*120 - 60);
+    const leftX = Math.max(40, Math.min(W-40, Math.round(center - gap/2)));
+    const rightX = Math.max(40, Math.min(W-40, Math.round(center + gap/2)));
+    const stickyLeft = Math.random() < 0.5;
+    infWallsPlatforms.push({ x: leftX - colW, y: endY, w: colW, h: startY - endY, t: stickyLeft ? 'sticky' : 'normal' });
+    infWallsPlatforms.push({ x: rightX,      y: endY, w: colW, h: startY - endY, t: stickyLeft ? 'normal' : 'sticky' });
+    // Add 1-2 horizontal ledges between columns
+    const nLedges = 1 + Math.round(Math.random());
+    for (let i=0;i<nLedges;i++) {
+      const ly = Math.round(startY - 30 - Math.random()*(INF_WALLS_CHUNK_H - 60));
+      const onLeft = Math.random() < 0.5;
+      const lx = onLeft ? (leftX - 100) : (rightX + colW);
+      const lw = 90 + Math.round(Math.random()*60);
+      const type = Math.random() < 0.2 ? 'ice' : 'normal';
+      const plat = { x: Math.max(10, Math.min(W - lw - 10, lx)), y: ly, w: lw, h: 16, t: type };
+      infWallsPlatforms.push(plat);
+      wallsLastPlatY = ly;
+      wallsLastPlatX = plat.x;
+    }
+    // Advance spawn pointer upwards (towards smaller y)
+    infWallsSpawnY = endY;
+  }
+  addEventListener('resize', updateCanvasScale);
+  addEventListener('orientationchange', () => setTimeout(updateCanvasScale, 50));
+  updateCanvasScale();
 
   const W = canvas.width;
   const H = canvas.height;
@@ -15,17 +79,18 @@
   let shopOpen = false;
   let shopTab = 0; // 0=Skins, 1=Difficulty, 2=Mode
   let skinSel = 0;
-  let diffSel = 0;
   let currentSurface = 'normal';
   let modeSel = 0;
   let onTitle = true;
   let diedThisFrame = false;
   let cameraX = 0;
+  let cameraY = 0; // for Infinite Walls vertical mode
   let transitioning = false;
   let coyoteFrames = 0;
   let jumpBufferFrames = 0;
   let prevJumpKey = false;
   let levelStartAt = 0;
+  let wallCoyoteFrames = 0;
 
   // Physics
   const GRAVITY = 0.7;
@@ -33,16 +98,163 @@
   const MAX_SPEED = 5.0;
   const JUMP_V = -12.0;
   const FRICTION = 0.85;
+  // Wall jump tunables
+  const WALL_JUMP_PUSH_X = 5.2;
+  const WALL_JUMP_PUSH_Y = -12.0;
+  const WALL_LOCK_FRAMES = 6; // frames to ignore wall re-stick after jump
+  const WALL_SLIDE_MAX_FALL = 3.6;
+  const WALL_SLIDE_MAX_FALL_STICKY = 1.8; // slower on sticky walls
+  // Spawn tunables
+  const INF_COIN_EMIT_CHANCE = 0.35; // chance to emit coins for an infinite platform
+  const INF_POWERUP_CHANCE_BASE = 0.08; // base chance for powerup in infinite
+  const INF_POWERUP_CHANCE_SLOPE = 0.08; // reduction with progress
 
   // Input
   const keys = new Set();
+  // Bind on-screen mobile controls if present
+  function bindMobileControls() {
+    const leftBtn = document.getElementById('btn-left');
+    const rightBtn = document.getElementById('btn-right');
+    const jumpBtn = document.getElementById('btn-jump');
+    function attach(btn, keyDown, keyUp) {
+      if (!btn) return;
+      const down = (ev) => { ev.preventDefault(); keys.add(keyDown); btn.classList.add('active'); btn.setPointerCapture && btn.setPointerCapture(ev.pointerId || 1); };
+      const up = (ev) => { ev.preventDefault(); keys.delete(keyDown); if (keyUp) keys.delete(keyUp); btn.classList.remove('active'); };
+      btn.addEventListener('pointerdown', down, { passive: false });
+      btn.addEventListener('pointerup', up, { passive: false });
+      btn.addEventListener('pointercancel', up, { passive: false });
+      btn.addEventListener('pointerleave', up, { passive: false });
+    }
+    attach(leftBtn, 'ArrowLeft');
+    attach(rightBtn, 'ArrowRight');
+    // Make jump map to both Up and Space so our key code sees it either way
+    if (jumpBtn) {
+      jumpBtn.addEventListener('pointerdown', (ev) => { ev.preventDefault(); keys.add('ArrowUp'); keys.add(' '); jumpBtn.classList.add('active'); }, { passive: false });
+      const up = (ev) => { ev.preventDefault(); keys.delete('ArrowUp'); keys.delete(' '); jumpBtn.classList.remove('active'); };
+      jumpBtn.addEventListener('pointerup', up, { passive: false });
+      jumpBtn.addEventListener('pointercancel', up, { passive: false });
+      jumpBtn.addEventListener('pointerleave', up, { passive: false });
+    }
+  }
+  bindMobileControls();
   function startFromTitle() {
     if (!onTitle) return;
     // apply selected mode from start screen
     selectedModeIndex = modeSel;
     if (typeof window !== 'undefined') window.selectedModeIndex = selectedModeIndex;
-    if (usingInfinite()) startInfinite(); else startLevel(0);
+    if (usingInfinite()) startInfinite();
+    else if (usingInfiniteWalls()) startInfiniteWalls();
+    else startLevel(0);
     onTitle = false;
+  }
+
+  // Lightweight physics step for the title demo (WASD control; W to jump)
+  function titleUpdate() {
+    // Do minimal physics using the same collision helpers
+    jumpedThisFrame = false;
+    touchedWallThisFrame = false;
+    player.isTouchingWall = false;
+    if (wallLockFrames > 0) wallLockFrames -= 1;
+
+    const effGravity = GRAVITY;
+    const effMax = MAX_SPEED;
+    let surfaceMoveMul = 1.0;
+    let surfaceFriction = FRICTION;
+    if (currentSurface === 'sticky') { surfaceMoveMul = 0.6; surfaceFriction = 0.6; }
+    else if (currentSurface === 'ice') { surfaceMoveMul = 1.0; surfaceFriction = 0.98; }
+    const effMove = MOVE * surfaceMoveMul;
+
+    // Title controls: use A/D for left/right, W for jump (avoid Space/Arrows which drive the menu)
+    const left = keys.has('a') || keys.has('A');
+    const right = keys.has('d') || keys.has('D');
+    const jump = keys.has('w') || keys.has('W');
+    const jumpPressed = jump && !prevJumpKey;
+
+    if (left) player.vx -= effMove; if (right) player.vx += effMove;
+    player.vx = Math.max(Math.min(player.vx, effMax), -effMax);
+
+    // Gravity and wall slide
+    player.vy += effGravity;
+    const holdingTowardWall = (player.wallSide === -1 && left) || (player.wallSide === 1 && right);
+    const wantSlide = player.wallIsSticky || holdingTowardWall;
+    const slideCap = player.wallIsSticky ? WALL_SLIDE_MAX_FALL_STICKY : WALL_SLIDE_MAX_FALL;
+    if (!player.onGround && (player.isTouchingWall || wallCoyoteFrames > 0) && wantSlide && wallLockFrames === 0 && player.vy > slideCap) {
+      player.vy = slideCap;
+    }
+
+    // X
+    player.x += player.vx;
+    collideAxis('x');
+    // Y
+    const wasOnGround = player.onGround;
+    player.y += player.vy;
+    player.onGround = false;
+    collideAxis('y');
+
+    // Touch wall pass
+    if (!player.onGround && wallLockFrames === 0) {
+      const platsTouch = getPlatforms();
+      for (const p of platsTouch) {
+        const vertOverlap = (player.y < p.y + p.h) && (player.y + player.h > p.y);
+        if (!vertOverlap) continue;
+        const touchRight = Math.abs((player.x + player.w) - p.x) <= 0.6;
+        const touchLeft = Math.abs(player.x - (p.x + p.w)) <= 0.6;
+        if (touchRight || touchLeft) {
+          player.wallSide = touchRight ? +1 : -1;
+          player.isTouchingWall = true;
+          player.wallIsSticky = ((p.t || 'normal') === 'sticky');
+          touchedWallThisFrame = true;
+          break;
+        }
+      }
+    }
+
+    // Coyote + jump buffer
+    if (player.onGround) { coyoteFrames = 8; }
+    else if (coyoteFrames > 0) { coyoteFrames -= 1; }
+
+    if (jumpPressed && (player.onGround || coyoteFrames > 0)) {
+      player.vy = JUMP_V;
+      player.onGround = false;
+      coyoteFrames = 0;
+      jumpedThisFrame = true;
+    }
+    // Wall jump
+    if (jumpPressed && !player.onGround && !jumpedThisFrame && (player.isTouchingWall || wallCoyoteFrames > 0)) {
+      const side = player.wallSide || 0;
+      if (side !== 0) player.vx = -side * WALL_JUMP_PUSH_X;
+      player.vy = WALL_JUMP_PUSH_Y;
+      wallLockFrames = WALL_LOCK_FRAMES;
+      jumpedThisFrame = true;
+      const baseX = player.x + (side > 0 ? player.w : 0);
+      const baseY = player.y + player.h - 2;
+      for (let i = 0; i < 4; i++) {
+        const ang = Math.random() * Math.PI - Math.PI/2;
+        const spd = 1 + Math.random() * 1.2;
+        fxPuffs.push({ x: baseX, y: baseY, vx: Math.cos(ang) * spd * (side>0?-1:1), vy: Math.sin(ang) * spd, born: performance.now(), life: 220, r: 2.5 + Math.random()*1.5 });
+      }
+    }
+
+    // Wall coyote bookkeeping
+    if (player.onGround) { wallCoyoteFrames = 0; player.isTouchingWall = false; player.wallIsSticky = false; }
+    else if (touchedWallThisFrame) { player.isTouchingWall = true; wallCoyoteFrames = 8; }
+    else if (wallCoyoteFrames > 0) { player.isTouchingWall = false; wallCoyoteFrames -= 1; }
+    else { player.isTouchingWall = false; player.wallIsSticky = false; }
+
+    // Ground friction
+    if (!left && !right && player.onGround) {
+      player.vx *= surfaceFriction;
+      if (Math.abs(player.vx) < 0.05) player.vx = 0;
+    }
+
+    // Keep within screen horizontally and above top
+    if (player.x < 0) { player.x = 0; player.vx = 0; }
+    if (player.x + player.w > W) { player.x = W - player.w; player.vx = 0; }
+    if (player.y < 0) { player.y = 0; player.vy = 0; }
+    // If fell, reset demo
+    if (player.y > H + 80) { setupTitleDemo(); }
+
+    prevJumpKey = jump;
   }
 
   function circleRectIntersect(cx, cy, cr, rx, ry, rw, rh) {
@@ -76,6 +288,25 @@
     // Shop toggle and navigation (edge-triggered on keydown)
     if (e.key === 'p' || e.key === 'P') {
       if (!onTitle) shopOpen = !shopOpen;
+      return;
+    }
+
+    // (removed) Quick Walls mode advance on key '2'
+
+    // Quick jump to Level 17 (index 16) in Normal mode
+    if (e.key === '1') {
+      // From title: force Normal mode and jump directly
+      if (onTitle) {
+        selectedModeIndex = 0; modeSel = 0;
+        if (typeof window !== 'undefined') window.selectedModeIndex = selectedModeIndex;
+        startLevel(16);
+        onTitle = false;
+        return;
+      }
+      // In-game: only if not using Infinite and shop closed
+      if (!usingInfinite() && !shopOpen) {
+        startLevel(16);
+      }
       return;
     }
 
@@ -126,7 +357,7 @@
     }
     if (!shopOpen) return;
     // While shop is open, handle navigation
-    const TAB_COUNT = 3;
+    const TAB_COUNT = 2;
     if (e.key === 'ArrowLeft') shopTab = (shopTab - 1 + TAB_COUNT) % TAB_COUNT;
     if (e.key === 'ArrowRight') shopTab = (shopTab + 1) % TAB_COUNT;
     if (shopTab === 0) {
@@ -138,14 +369,6 @@
       if (e.key === 'End') skinSel = skins.length - 1;
       if (e.key === 'Enter' || e.key === ' ') buyOrEquipSkin(skinSel);
     } else if (shopTab === 1) {
-      if (e.key === 'ArrowUp') diffSel = (diffSel - 1 + difficulties.length) % difficulties.length;
-      if (e.key === 'ArrowDown') diffSel = (diffSel + 1) % difficulties.length;
-      if (e.key === 'PageUp') diffSel = Math.max(0, diffSel - 3);
-      if (e.key === 'PageDown') diffSel = Math.min(difficulties.length - 1, diffSel + 3);
-      if (e.key === 'Home') diffSel = 0;
-      if (e.key === 'End') diffSel = difficulties.length - 1;
-      if (e.key === 'Enter' || e.key === ' ') buyOrEquipDifficulty(diffSel);
-    } else if (shopTab === 2) {
       if (e.key === 'ArrowUp') modeSel = (modeSel - 1 + modes.length) % modes.length;
       if (e.key === 'ArrowDown') modeSel = (modeSel + 1) % modes.length;
       if (e.key === 'Home') modeSel = 0;
@@ -162,7 +385,9 @@
     if (i < 0 || i >= modes.length) return;
     selectedModeIndex = i;
     if (typeof window !== 'undefined') window.selectedModeIndex = selectedModeIndex;
-    if (usingInfinite()) startInfinite(); else startLevel(0);
+    if (usingInfinite()) startInfinite();
+    else if (usingInfiniteWalls()) startInfiniteWalls();
+    else startLevel(0);
   }
   addEventListener('keyup', (e) => keys.delete(e.key));
 
@@ -172,6 +397,9 @@
     vx: 0, vy: 0,
     onGround: false,
     color: '#7cf7a7',
+    isTouchingWall: false,
+    wallSide: 0, // -1 left, +1 right
+    wallIsSticky: false,
   };
 
   const goalColor = '#ffd166';
@@ -286,8 +514,126 @@
     { key: 'penguin',  name: 'Penguin',   body: '#4d4d4d', outline: '#1f1f1f', cost: 12, owned: false },
   ];
 
-  // After LEVELS is defined, expose a getter for Normal mode
-  function getLevels() { return LEVELS; }
+  // Walls Mode Levels: wall-centric layouts for practicing wall jumps/slides
+  /** @type {{spawn:{x:number,y:number}, goal:{x:number,y:number,w:number,h:number}, platforms:{x:number,y:number,w:number,h:number,t?:string}[], coins:{x:number,y:number,r:number}[]}[]} */
+  const WALL_LEVELS = [
+    // W1
+    {
+      spawn: { x: 60, y: 360 },
+      goal:  { x: 740, y: 120, w: 40, h: 50 },
+      platforms: [
+        { x: 0, y: 420, w: 800, h: 30, t: 'normal' },
+        { x: 220, y: 360, w: 100, h: 14, t: 'normal' },
+        { x: 380, y: 240, w: 20,  h: 200, t: 'normal' },
+        { x: 520, y: 220, w: 20,  h: 200, t: 'normal' },
+        { x: 660, y: 260, w: 100, h: 14, t: 'normal' },
+      ],
+      coins: [ {x: 400, y: 200, r: 10}, {x: 500, y: 200, r: 10}, {x: 720, y: 230, r: 10} ],
+    },
+    // W2
+    {
+      spawn: { x: 40, y: 360 },
+      goal:  { x: 760, y: 180, w: 40, h: 50 },
+      platforms: [
+        { x: 0, y: 420, w: 800, h: 30, t: 'normal' },
+        { x: 260, y: 220, w: 20,  h: 220, t: 'normal' },
+        { x: 320, y: 260, w: 20,  h: 180, t: 'normal' },
+        { x: 380, y: 300, w: 20,  h: 140, t: 'normal' },
+        { x: 520, y: 300, w: 20,  h: 140, t: 'normal' },
+        { x: 580, y: 260, w: 20,  h: 180, t: 'normal' },
+        { x: 640, y: 220, w: 20,  h: 220, t: 'normal' },
+      ],
+      coins: [ {x: 300, y: 200, r: 10}, {x: 420, y: 260, r: 10}, {x: 560, y: 260, r: 10}, {x: 700, y: 200, r: 10} ],
+    },
+    // W3
+    {
+      spawn: { x: 60, y: 320 },
+      goal:  { x: 740, y: 140, w: 40, h: 50 },
+      platforms: [
+        { x: 0, y: 420, w: 800, h: 30, t: 'normal' },
+        { x: 200, y: 360, w: 90,  h: 16, t: 'normal' },
+        { x: 340, y: 220, w: 20,  h: 220, t: 'normal' },
+        { x: 440, y: 200, w: 20,  h: 240, t: 'normal' },
+        { x: 540, y: 220, w: 20,  h: 220, t: 'normal' },
+        { x: 660, y: 260, w: 120, h: 16, t: 'normal' },
+      ],
+      coins: [ {x: 360, y: 200, r: 10}, {x: 460, y: 190, r: 10}, {x: 560, y: 200, r: 10}, {x: 700, y: 240, r: 10} ],
+    },
+    // W4 (Sticky walls focus)
+    {
+      spawn: { x: 60, y: 340 },
+      goal:  { x: 740, y: 140, w: 40, h: 50 },
+      platforms: [
+        { x: 0,   y: 420, w: 800, h: 30, t: 'normal' },
+        { x: 200, y: 360, w: 100, h: 16, t: 'normal' },
+        { x: 340, y: 200, w: 22,  h: 240, t: 'sticky' },
+        { x: 480, y: 220, w: 22,  h: 220, t: 'sticky' },
+        { x: 620, y: 260, w: 110, h: 16, t: 'normal' },
+      ],
+      coins: [ {x: 360, y: 180, r: 10}, {x: 500, y: 200, r: 10}, {x: 660, y: 240, r: 10} ],
+    },
+    // W5 (Alternating sticky/non-sticky ladder)
+    {
+      spawn: { x: 60, y: 340 },
+      goal:  { x: 740, y: 140, w: 40, h: 50 },
+      platforms: [
+        { x: 0,   y: 420, w: 800, h: 30, t: 'normal' },
+        { x: 100, y: 360, w: 80,  h: 14, t: 'normal' },
+        { x: 240, y: 220, w: 18,  h: 220, t: 'sticky' },
+        { x: 300, y: 260, w: 18,  h: 180, t: 'normal' },
+        { x: 360, y: 300, w: 18,  h: 140, t: 'sticky' },
+        { x: 420, y: 300, w: 18,  h: 140, t: 'normal' },
+        { x: 480, y: 260, w: 18,  h: 180, t: 'sticky' },
+        { x: 540, y: 220, w: 18,  h: 220, t: 'normal' },
+        { x: 660, y: 260, w: 110, h: 16, t: 'normal' },
+      ],
+      coins: [ {x: 260, y: 190, r: 10}, {x: 380, y: 260, r: 10}, {x: 500, y: 240, r: 10}, {x: 700, y: 240, r: 10} ],
+    },
+    // W6 (Sticky chute and ledges)
+    {
+      spawn: { x: 80, y: 160 },
+      goal:  { x: 740, y: 300, w: 40, h: 50 },
+      platforms: [
+        { x: 0,   y: 420, w: 800, h: 30, t: 'normal' },
+        { x: 120, y: 200, w: 90,  h: 14,  t: 'normal' },
+        { x: 260, y: 100, w: 20,  h: 260, t: 'sticky' },
+        { x: 320, y: 120, w: 20,  h: 240, t: 'sticky' },
+        { x: 380, y: 160, w: 20,  h: 200, t: 'sticky' },
+        { x: 500, y: 340, w: 120, h: 16, t: 'normal' },
+        { x: 650, y: 300, w: 120, h: 16, t: 'normal' },
+      ],
+      coins: [ {x: 140, y: 180, r: 10}, {x: 280, y: 90, r: 10}, {x: 340, y: 110, r: 10}, {x: 400, y: 150, r: 10}, {x: 560, y: 320, r: 10} ],
+    },
+    // W7 (Sticky twin columns with gaps)
+    {
+      spawn: { x: 60, y: 340 },
+      goal:  { x: 740, y: 180, w: 40, h: 50 },
+      platforms: [
+        { x: 0,   y: 420, w: 800, h: 30, t: 'normal' },
+        { x: 140, y: 360, w: 100, h: 14, t: 'normal' },
+        { x: 360, y: 180, w: 22,  h: 240, t: 'sticky' },
+        { x: 500, y: 200, w: 22,  h: 220, t: 'sticky' },
+        { x: 300, y: 280, w: 80,  h: 14,  t: 'normal' },
+        { x: 560, y: 260, w: 80,  h: 14,  t: 'normal' },
+        { x: 660, y: 220, w: 110, h: 16, t: 'normal' },
+      ],
+      coins: [ {x: 200, y: 340, r: 10}, {x: 380, y: 160, r: 10}, {x: 520, y: 160, r: 10}, {x: 690, y: 200, r: 10} ],
+    },
+  ];
+
+  // After LEVELS is defined, expose getter for static levels
+  // Normal mode now uses an interleaving of LEVELS and WALL_LEVELS by default.
+  function getLevels() {
+    const A = LEVELS;
+    const B = WALL_LEVELS;
+    const out = [];
+    const max = Math.max(A.length, B.length);
+    for (let i = 0; i < max; i++) {
+      if (i < A.length) out.push(A[i]);
+      if (i < B.length) out.push(B[i]);
+    }
+    return out;
+  }
 
   // Shop -> Mode selection
   function selectMode(i) {
@@ -308,6 +654,12 @@
 
   // Infinite mode state
   let infPlatforms = [];
+  // Infinite Walls (vertical) state
+  let infWallsPlatforms = [];
+  let infWallsSpawnY = 0; // highest generated Y (can go negative as we go up)
+  let wallsLastPlatY = 0;
+  let wallsLastPlatX = 0;
+  const INF_WALLS_CHUNK_H = 220;
   let infCoins = [];
   let infSpawnX = 0;
   let lastPlatX = 0;
@@ -320,6 +672,32 @@
   const INF_PLATFORM_WIDTHS = [70, 100, 120];
   let airJumpsLeft = 0;
   let jumpedThisFrame = false;
+  let touchedWallThisFrame = false;
+  let wallLockFrames = 0;
+  let fxPuffs = [];
+
+  // Title screen demo state (small playground to test wall jumps)
+  let titlePlatforms = [];
+  function setupTitleDemo() {
+    // Simple floor and two vertical walls to practice wall slides/jumps
+    titlePlatforms = [
+      { x: 0, y: 420, w: 800, h: 30, t: 'normal' },
+      { x: 360, y: 200, w: 20,  h: 200, t: 'normal' },
+      { x: 460, y: 200, w: 20,  h: 200, t: 'sticky' },
+      { x: 240, y: 340, w: 80,  h: 16,  t: 'normal' },
+      { x: 540, y: 320, w: 100, h: 16,  t: 'ice' },
+    ];
+    // Place player between the walls
+    player.x = 400 - player.w/2;
+    player.y = 180;
+    player.vx = 0; player.vy = 0;
+    player.onGround = false;
+    player.isTouchingWall = false;
+    player.wallSide = 0;
+    player.wallIsSticky = false;
+    cameraX = 0;
+    coyoteFrames = 0; jumpBufferFrames = 0; wallCoyoteFrames = 0; wallLockFrames = 0;
+  }
 
   // Power-ups state
   let speedUntil = 0;
@@ -335,51 +713,48 @@
   let infEnemies = [];
 
   function usingInfinite() { return selectedModeIndex === 1; }
+  function usingInfiniteWalls() { return selectedModeIndex === 2; }
 
   // For rendering/collisions, get platforms list for current mode
   function getPlatforms() {
-    const base = usingInfinite() ? infPlatforms : getLevels()[levelIndex].platforms;
+    if (onTitle) return titlePlatforms;
+    let base;
+    if (usingInfinite()) base = infPlatforms;
+    else if (usingInfiniteWalls()) base = infWallsPlatforms;
+    else base = getLevels()[levelIndex].platforms;
     return base.concat(builderBlocks);
   }
   function getGoal() {
-    if (usingInfinite()) return null;
+    if (onTitle || usingInfinite() || usingInfiniteWalls()) return null;
     return getLevels()[levelIndex].goal;
   }
   let selectedSkinIndex = 0;
 
-  const difficulties = [
-    { name: 'Easy',      g: 0.9, move: 1.1, jump: 1.1, max: 1.1, cost: 0, owned: true },
-    { name: 'Medium',    g: 1.0, move: 1.0, jump: 1.0, max: 1.0, cost: 0, owned: true },
-    { name: 'Hard',      g: 1.1, move: 0.95, jump: 0.95, max: 0.95, cost: 6, owned: false },
-    { name: 'Very Hard', g: 1.2, move: 0.9,  jump: 0.9,  max: 0.9,  cost: 10, owned: false },
-  ];
-  let selectedDifficultyIndex = 1; // default Medium
+  // difficulty removed
 
-  // Modes
+  // Modes (Walls and Mixed removed; Normal now uses interleaved levels by default)
   const modes = [
     { name: 'Normal' },
     { name: 'Infinite' },
+    { name: 'Infinite Walls' },
   ];
   let selectedModeIndex = 0; // Normal by default
 
   // Expose to window for shop helpers outside the IIFE
   if (typeof window !== 'undefined') {
     window.skins = skins;
-    window.difficulties = difficulties;
     window.modes = modes;
     window.selectedSkinIndex = selectedSkinIndex;
-    window.selectedDifficultyIndex = selectedDifficultyIndex;
     window.selectedModeIndex = selectedModeIndex;
     window.coinsCollected = coinsCollected;
     window.shopTab = shopTab;
     window.skinSel = skinSel;
-    window.diffSel = diffSel;
     window.modeSel = modeSel;
   }
 
   // Levels
   // y=0 is top; y increases downward
-  /** @type {{spawn:{x:number,y:number}, goal:{x:number,y:number,w:number,h:number}, platforms:{x:number,y:number,w:number,h:number,t?:'normal'|'sticky'|'ice'}[], coins:{x:number,y:number,r:number}[]}[]} */
+  /** @type {{spawn:{x:number,y:number}, goal:{x:number,y:number,w:number,h:number}, platforms:{x:number,y:number,w:number,h:number,t?:'normal'|'sticky'|'ice'|'death'|'start'}[], coins:{x:number,y:number,r:number}[]}[]} */
   const LEVELS = [
     {
       spawn: {x: 50, y: 340},
@@ -703,6 +1078,26 @@
         {x: 680, y: 310, r: 10},
       ],
     },
+    {
+      spawn: {x: 60, y: 360},
+      goal:  {x: 740, y: 120, w: 40, h: 50},
+      platforms: [
+        {x: 0, y: 420, w: 800, h: 30, t: 'normal'},
+        {x: 220, y: 360, w: 100, h: 14, t: 'normal'},
+        {x: 340, y: 350, w: 40,  h: 12, t: 'normal'},
+        {x: 560, y: 300, w: 40,  h: 12, t: 'normal'},
+        {x: 380, y: 220, w: 20,  h: 200, t: 'normal'},
+        {x: 520, y: 220, w: 20,  h: 200, t: 'normal'},
+        {x: 660, y: 260, w: 100, h: 14, t: 'normal'}
+      ],
+      coins: [
+        {x: 400, y: 200, r: 10},
+        {x: 500, y: 200, r: 10},
+        {x: 420, y: 260, r: 10},
+        {x: 480, y: 260, r: 10},
+        {x: 720, y: 230, r: 10}
+      ]
+    },
   ];
 
   // Runtime level coins with collected flags
@@ -716,8 +1111,10 @@
     const result = [];
     const plats = (L.platforms || []).filter(p => (p.t||'normal') !== 'death' && p.w >= 60 && p.y <= 380);
     if (plats.length === 0) return result;
-    const count = Math.random() < 0.5 ? 1 : 2;
-    const types = ['speed','superjump','builder'];
+    // Mostly 0 or 1 power-up; rarely 2
+    const roll = Math.random();
+    const count = roll < 0.55 ? 1 : (roll < 0.90 ? 0 : 2);
+    const types = ['speed','superjump','builder','life'];
     for (let n=0;n<count;n++) {
       const p = plats[Math.floor(Math.random()*plats.length)];
       const x = Math.round(p.x + p.w * (0.3 + Math.random()*0.4));
@@ -744,8 +1141,11 @@
       startInfinite();
       return;
     }
+    const levelsNow = getLevels();
+    if (!levelsNow || levelsNow.length === 0) return;
+    if (typeof i !== 'number' || i < 0 || i >= levelsNow.length) i = 0;
     levelIndex = i;
-    const L = getLevels()[levelIndex];
+    const L = levelsNow[levelIndex];
     player.x = L.spawn.x; player.y = L.spawn.y; player.vx = 0; player.vy = 0;
     won = false;
     player.onGround = false;
@@ -753,6 +1153,8 @@
     speedUntil = 0; superjumpUntil = 0;
     airJumpsLeft = (skins[selectedSkinIndex]?.key === 'penguin') ? 1 : 0;
     levelStartAt = performance.now();
+    // Recompute total coins for current mode and fill runtime coins list
+    totalCoins = levelsNow.reduce((sum, L2) => sum + (L2.coins?.length || 0), 0);
     // Fill runtime coins list
     levelCoins = (L.coins || []).map(c => ({...c, taken:false, float: Math.random()*Math.PI*2 }));
     // Power-ups for this level (auto-generate if not provided)
@@ -886,10 +1288,12 @@
       if (!okPlace(ax, ay, Math.round(aw), INF_PLATFORM_HEIGHT)) return false;
       infPlatforms.push({ x: Math.round(ax), y: Math.round(ay), w: Math.round(aw), h: INF_PLATFORM_HEIGHT, t: at });
       const cN = Math.max(1, Math.min(3, Math.floor(aw / 50)));
-      for (let i=0;i<cN;i++) {
-        const cx = ax + (i+1) * (aw/(cN+1));
-        const cy = ay - 24 - Math.random()*10;
-        infCoins.push({ x: Math.round(cx), y: Math.round(cy), r: 10, taken: false, float: Math.random()*Math.PI*2 });
+      if (Math.random() < INF_COIN_EMIT_CHANCE) {
+        for (let i=0;i<cN;i++) {
+          const cx = ax + (i+1) * (aw/(cN+1));
+          const cy = ay - 24 - Math.random()*10;
+          infCoins.push({ x: Math.round(cx), y: Math.round(cy), r: 10, taken: false, float: Math.random()*Math.PI*2 });
+        }
       }
       if (primary) { lastPlatX = Math.round(ax); lastPlatY = Math.round(ay); lastPlatW = Math.round(aw); }
       return true;
@@ -973,8 +1377,8 @@
       }
     }
     infSpawnX = endX;
-    // occasionally spawn a powerup (slightly fewer as progress increases)
-    if (Math.random() < Math.max(0.12, 0.25 - 0.07 * prog)) {
+    // occasionally spawn a powerup (less common, decreases with progress)
+    if (Math.random() < Math.max(INF_POWERUP_CHANCE_BASE, 0.20 - INF_POWERUP_CHANCE_SLOPE * prog)) {
       const types = ['speed','superjump','builder'];
       const kind = choice(types);
       infPowerups.push({ x: px + platW/2, y: platY - 20, r: 10, type: kind, taken: false });
@@ -1030,7 +1434,6 @@
     // Sync state possibly changed by shop
     if (typeof window !== 'undefined') {
       if (typeof window.selectedSkinIndex === 'number') selectedSkinIndex = window.selectedSkinIndex;
-      if (typeof window.selectedDifficultyIndex === 'number') selectedDifficultyIndex = window.selectedDifficultyIndex;
       if (typeof window.coinsCollected === 'number') coinsCollected = window.coinsCollected;
     }
 
@@ -1044,11 +1447,14 @@
       return;
     }
     jumpedThisFrame = false;
-    // Effective physics from difficulty
-    const diff = difficulties[selectedDifficultyIndex];
-    const effGravity = GRAVITY * diff.g;
-    const effMax = MAX_SPEED * diff.max;
-    const effJump = JUMP_V * diff.jump;
+    touchedWallThisFrame = false;
+    player.isTouchingWall = false;
+    // do not reset wallIsSticky here to preserve coyote behavior; reset when grounded or after coyote ends
+    if (wallLockFrames > 0) wallLockFrames -= 1;
+    // Effective physics (difficulty removed)
+    const effGravity = GRAVITY;
+    const effMax = MAX_SPEED;
+    const effJump = JUMP_V;
     // Surface modifiers
     let surfaceMoveMul = 1.0;
     let surfaceFriction = FRICTION;
@@ -1063,7 +1469,7 @@
     const now = performance.now();
     const speedBoost = now < speedUntil ? 1.6 : 1.0;
     const jumpBoost = now < superjumpUntil ? 1.35 : 1.0;
-    const effMove = MOVE * diff.move * surfaceMoveMul * speedBoost;
+    const effMove = MOVE * surfaceMoveMul * speedBoost;
     // Input horizontal
     const left = keys.has('ArrowLeft') || keys.has('a') || keys.has('A');
     const right = keys.has('ArrowRight') || keys.has('d') || keys.has('D');
@@ -1075,6 +1481,13 @@
 
     // Gravity
     player.vy += effGravity;
+    // Wall slide: reduce falling speed. Sticky walls slide even without holding.
+    const holdingTowardWall = (player.wallSide === -1 && left) || (player.wallSide === 1 && right);
+    const wantSlide = player.wallIsSticky || holdingTowardWall;
+    const slideCap = player.wallIsSticky ? WALL_SLIDE_MAX_FALL_STICKY : WALL_SLIDE_MAX_FALL;
+    if (!player.onGround && (player.isTouchingWall || wallCoyoteFrames > 0) && wantSlide && wallLockFrames === 0 && player.vy > slideCap) {
+      player.vy = slideCap;
+    }
 
     // Apply X movement and resolve collisions on X
     player.x += player.vx;
@@ -1086,6 +1499,32 @@
     player.onGround = false;
     collideAxis('y');
 
+    // Post-collision wall contact detection based on hitbox touching
+    if (!player.onGround && wallLockFrames === 0) {
+      const platsTouch = getPlatforms();
+      let foundWallTouch = false;
+      for (const p of platsTouch) {
+        // vertical overlap required
+        const vertOverlap = (player.y < p.y + p.h) && (player.y + player.h > p.y);
+        if (!vertOverlap) continue;
+        // touching right side of player to left side of platform
+        const touchRight = Math.abs((player.x + player.w) - p.x) <= 0.6;
+        // touching left side of player to right side of platform
+        const touchLeft = Math.abs(player.x - (p.x + p.w)) <= 0.6;
+        if (touchRight || touchLeft) {
+          player.wallSide = touchRight ? +1 : -1;
+          player.isTouchingWall = true;
+          player.wallIsSticky = ((p.t || 'normal') === 'sticky');
+          touchedWallThisFrame = true;
+          foundWallTouch = true;
+          break;
+        }
+      }
+      if (!foundWallTouch && !touchedWallThisFrame) {
+        // do not force false here; coyote and previous collisions manage state
+      }
+    }
+
     // Camera follow in infinite
     if (usingInfinite()) {
       cameraX = Math.max(0, player.x - 200);
@@ -1096,6 +1535,16 @@
       if (infCoins.length > 0) infCoins = infCoins.filter(c => (c.x > cullX) && !c.taken);
       if (infPowerups.length > 0) infPowerups = infPowerups.filter(pu => (pu.x > cullX) && !pu.taken);
       if (infEnemies.length > 0) infEnemies = infEnemies.filter(e => (e.x || 0) > cullX - 100);
+    } else if (usingInfiniteWalls()) {
+      // Vertical camera: allow negative cameraY so we can scroll up beyond 0
+      if (typeof cameraY !== 'number') cameraY = 0;
+      const targetY = player.y - 220; // keep player slightly above center
+      cameraY = Math.min(cameraY, targetY);
+      // Spawn more above
+      while (infWallsSpawnY > cameraY - 600) generateInfiniteWallsChunk();
+      // Cull below camera
+      const cullY = cameraY + H + 500;
+      infWallsPlatforms = infWallsPlatforms.filter(p => (p.y) <= cullY);
     } else {
       cameraX = 0;
     }
@@ -1118,11 +1567,49 @@
       jumpBufferFrames = 0;
       jumpedThisFrame = true;
     }
+    // Wall jump (takes priority over air jump). Requires recent wall contact.
+    if (jumpPressed && !player.onGround && !jumpedThisFrame && (player.isTouchingWall || wallCoyoteFrames > 0)) {
+      // Push away from wall and upwards
+      const side = player.wallSide || 0;
+      if (side !== 0) {
+        player.vx = -side * WALL_JUMP_PUSH_X;
+      }
+      player.vy = WALL_JUMP_PUSH_Y * jumpBoost;
+      wallLockFrames = WALL_LOCK_FRAMES;
+      jumpBufferFrames = 0;
+      jumpedThisFrame = true;
+      // FX: spawn dust puffs
+      const baseX = player.x + (side > 0 ? player.w : 0);
+      const baseY = player.y + player.h - 2;
+      for (let i = 0; i < 6; i++) {
+        const ang = Math.random() * Math.PI - Math.PI/2;
+        const spd = 1 + Math.random() * 1.5;
+        fxPuffs.push({ x: baseX, y: baseY, vx: Math.cos(ang) * spd * (side>0?-1:1), vy: Math.sin(ang) * spd, born: performance.now(), life: 260, r: 3 + Math.random()*2 });
+      }
+    }
     if (jumpPressed && !player.onGround && !jumpedThisFrame && airJumpsLeft > 0) {
       player.vy = effJump * jumpBoost;
       airJumpsLeft -= 1;
       jumpBufferFrames = 0;
       jumpedThisFrame = true;
+    }
+
+    // Wall coyote logic (short grace window to recognize recent wall contact)
+    if (player.onGround) {
+      wallCoyoteFrames = 0;
+      player.isTouchingWall = false;
+      player.wallIsSticky = false;
+    } else {
+      if (touchedWallThisFrame) {
+        player.isTouchingWall = true;
+        wallCoyoteFrames = 8;
+      } else if (wallCoyoteFrames > 0) {
+        player.isTouchingWall = false; // still allow slide via coyote; wallIsSticky preserved
+        wallCoyoteFrames -= 1;
+      } else {
+        player.isTouchingWall = false;
+        player.wallIsSticky = false;
+      }
     }
 
     // Friction when on ground and no input
@@ -1135,7 +1622,14 @@
     }
 
     // Floor death (fell)
-    if (player.y > H + 100) {
+    if (usingInfiniteWalls()) {
+      if (player.y > cameraY + H + 100) {
+        lives -= 1;
+        if (lives <= 0) { lives = 3; startInfiniteWalls(); }
+        else { startInfiniteWalls(); }
+        return;
+      }
+    } else if (player.y > H + 100) {
       lives -= 1;
       if (lives <= 0) {
         lives = 3;
@@ -1183,6 +1677,7 @@
         if (p.type === 'speed') speedUntil = Math.max(speedUntil, now + dur);
         else if (p.type === 'superjump') superjumpUntil = Math.max(superjumpUntil, now + dur);
         else if (p.type === 'builder') builderCharges = Math.max(builderCharges, 2);
+        else if (p.type === 'life') { lives += 1; }
       }
     }
 
@@ -1195,14 +1690,38 @@
         if (e.x - cameraX > W + 100) e.x -= (W + 200); // recycle a bit to left
         e.y = e.baseY + Math.sin(performance.now()/500 + (e.baseY*0.1)) * e.amp;
         const er = e.r || 8;
-        if (enemyActive && circleRectIntersect(e.x, e.y, er, player.x, player.y, player.w, player.h)) diedThisFrame = true;
+        if (enemyActive && circleRectIntersect(e.x, e.y, er, player.x, player.y, player.w, player.h)) {
+          // Stomp check: falling and player's bottom above enemy center
+          const canStomp = player.vy > 1.0 && (player.y + player.h) <= (e.y + 4);
+          if (canStomp) {
+            e.dead = true;
+            player.vy = JUMP_V * 0.7; // bounce
+            jumpedThisFrame = true;
+          } else {
+            diedThisFrame = true;
+          }
+        }
       } else if (e.type === 'rhino') {
         e.x += e.dir * e.speed * 2.0;
         if (e.x < e.minX) { e.x = e.minX; e.dir = 1; }
         if (e.x > e.maxX) { e.x = e.maxX; e.dir = -1; }
-        if (enemyActive && aabb(player.x, player.y, player.w, player.h, e.x, e.y, e.w, e.h)) diedThisFrame = true;
+        if (enemyActive && aabb(player.x, player.y, player.w, player.h, e.x, e.y, e.w, e.h)) {
+          // Stomp check: falling and contacting top surface region
+          const onTop = (player.y + player.h) <= (e.y + 6) && player.vy > 1.0;
+          if (onTop) {
+            e.dead = true;
+            player.y = e.y - player.h; // place on top to avoid sticky overlap
+            player.vy = JUMP_V * 0.7;
+            jumpedThisFrame = true;
+          } else {
+            diedThisFrame = true;
+          }
+        }
       }
     }
+    // Remove defeated enemies
+    if (usingInfinite()) infEnemies = infEnemies.filter(e => !e.dead);
+    else levelEnemies = levelEnemies.filter(e => !e.dead);
 
     prevJumpKey = jump;
 
@@ -1225,6 +1744,13 @@
       if (aabb(player.x, player.y, player.w, player.h, p.x, p.y, p.w, p.h)) {
         if (p.t === 'death') { diedThisFrame = true; continue; }
         if (axis === 'x') {
+          // Detect wall contact on X collisions
+          if (!player.onGround && wallLockFrames === 0) {
+            if (player.vx > 0) { player.wallSide = +1; }
+            else if (player.vx < 0) { player.wallSide = -1; }
+            player.wallIsSticky = ((p.t || 'normal') === 'sticky');
+            touchedWallThisFrame = true;
+          }
           if (player.vx > 0) player.x = p.x - player.w; else if (player.vx < 0) player.x = p.x + p.w;
           player.vx = 0;
         } else {
@@ -1241,7 +1767,7 @@
         if (player.x + player.w > W) { player.x = W - player.w; player.vx = 0; }
       }
     } else if (axis === 'y') {
-      if (player.y < 0) { player.y = 0; player.vy = 0; }
+      if (!usingInfiniteWalls() && player.y < 0) { player.y = 0; player.vy = 0; }
     }
   }
 
@@ -1264,28 +1790,40 @@
     drawSkyBackground(ctx, W, H, cameraX);
 
     if (onTitle) {
+      // Draw title playground platforms
+      for (const p of getPlatforms()) {
+        drawPlatformTextured(ctx, p, 0);
+        if ((p.t||'normal') === 'death') {
+          const x = Math.round(p.x), y = Math.round(p.y), w = p.w, h = p.h;
+          ctx.fillStyle = 'rgba(255,80,80,0.35)';
+          ctx.fillRect(x, y, w, h);
+        }
+      }
+      // Player
+      window.CURRENT_SKIN = skins[selectedSkinIndex];
+      drawPlayer(Math.round(player.x), Math.round(player.y));
+      // Overlay UI
       drawStartScreen();
       return;
     }
 
-    // Platforms
+    // Platforms (with vertical translate for Infinite Walls)
+    if (usingInfiniteWalls()) ctx.save(), ctx.translate(0, -cameraY);
     for (const p of getPlatforms()) {
-      drawPlatformTextured(ctx, p, cameraX);
-      // draw death overlay if applicable
+      const drawCamX = usingInfinite() ? cameraX : 0;
+      drawPlatformTextured(ctx, p, drawCamX);
       if ((p.t||'normal') === 'death') {
-        const x = Math.round(p.x - cameraX), y = Math.round(p.y), w = p.w, h = p.h;
-        ctx.fillStyle = 'rgba(255,80,80,0.35)';
-        ctx.fillRect(x, y, w, h);
+        const x = Math.round(p.x - drawCamX), y = Math.round(p.y), w = p.w, h = p.h;
+        ctx.fillStyle = 'rgba(255,80,80,0.35)'; ctx.fillRect(x, y, w, h);
         ctx.fillStyle = 'rgba(255,255,255,0.25)';
-        for (let i=0;i<w;i+=12) {
-          ctx.beginPath(); ctx.arc(x + i + 6, y + 6, 3, 0, Math.PI*2); ctx.fill();
-        }
+        for (let i=0;i<w;i+=12) { ctx.beginPath(); ctx.arc(x + i + 6, y + 6, 3, 0, Math.PI*2); ctx.fill(); }
       }
     }
+    if (usingInfiniteWalls()) ctx.restore();
 
     // Coins
     const t = performance.now() / 1000;
-    const coinsListR = usingInfinite() ? infCoins : levelCoins;
+    const coinsListR = usingInfinite() ? infCoins : (usingInfiniteWalls() ? [] : levelCoins);
     for (const c of coinsListR) {
       if (c.taken) continue;
       const bob = Math.sin(t * 3 + c.float) * 2;
@@ -1306,33 +1844,129 @@
       ctx.stroke();
     }
 
+    // Power-ups (distinct from coins)
+    const pListR = usingInfinite() ? infPowerups : (usingInfiniteWalls() ? [] : levelPowerups);
+    for (const p of pListR) {
+      if (p.taken) continue;
+      const px = Math.round(p.x - cameraX);
+      const py = Math.round(p.y);
+      const r = p.r || 12;
+      // backdrop shadow
+      ctx.fillStyle = 'rgba(0,0,0,0.25)';
+      ctx.beginPath(); ctx.arc(px + 2, py + 2, r + 2, 0, Math.PI*2); ctx.fill();
+      // body color by type
+      let body = '#888';
+      if (p.type === 'speed') body = '#4cc9f0';
+      else if (p.type === 'superjump') body = '#90be6d';
+      else if (p.type === 'builder') body = '#f4a261';
+      else if (p.type === 'life') body = '#e63946';
+      ctx.fillStyle = body;
+      ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI*2); ctx.fill();
+      // simple icon overlay
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+      ctx.lineWidth = 2;
+      if (p.type === 'speed') {
+        // lightning bolt
+        ctx.beginPath(); ctx.moveTo(px-3,py-6); ctx.lineTo(px+1,py-2); ctx.lineTo(px-1,py-2); ctx.lineTo(px+3,py+6); ctx.stroke();
+      } else if (p.type === 'superjump') {
+        // up arrow
+        ctx.beginPath(); ctx.moveTo(px,py-6); ctx.lineTo(px,py+6); ctx.moveTo(px-4,py-2); ctx.lineTo(px,py-6); ctx.lineTo(px+4,py-2); ctx.stroke();
+      } else if (p.type === 'builder') {
+        // small wrench-like mark
+        ctx.beginPath(); ctx.arc(px-2, py-1, 2, 0, Math.PI*2); ctx.moveTo(px-1,py); ctx.lineTo(px+4,py+4); ctx.stroke();
+      } else if (p.type === 'life') {
+        // heart
+        ctx.fillStyle = 'rgba(255,255,255,0.9)';
+        ctx.beginPath();
+        ctx.moveTo(px, py+2);
+        ctx.bezierCurveTo(px-6, py-4, px-6, py+5, px, py+8);
+        ctx.bezierCurveTo(px+6, py+5, px+6, py-4, px, py+2);
+        ctx.fill();
+      }
+      // outline
+      ctx.strokeStyle = 'rgba(0,0,0,0.4)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI*2); ctx.stroke();
+    }
+
     // Enemies (visible)
-    const enemiesR = usingInfinite() ? infEnemies : levelEnemies;
+    const enemiesR = usingInfinite() ? infEnemies : (usingInfiniteWalls() ? [] : levelEnemies);
     for (const e of enemiesR) {
       const ex = Math.round(e.x - cameraX);
       const ey = Math.round(e.y);
       if (ex < -100 || ex > W + 100 || ey < -100 || ey > H + 100) continue;
       if (e.type === 'gnat') {
-        const r = (e.r || 8) + 2;
-        ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.beginPath(); ctx.arc(ex + 2, ey + 2, r, 0, Math.PI*2); ctx.fill();
-        const grad = ctx.createRadialGradient(ex-2, ey-2, 2, ex, ey, r);
-        grad.addColorStop(0, '#6c757d'); grad.addColorStop(1, '#343a40');
-        ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(ex, ey, r, 0, Math.PI*2); ctx.fill();
-        ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(ex, ey, r, 0, Math.PI*2); ctx.stroke();
-        ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 2;
-        const flap = Math.sin(performance.now()/120) * 4;
-        ctx.beginPath(); ctx.moveTo(ex-8,ey-3); ctx.lineTo(ex-14,ey-9-flap); ctx.moveTo(ex+8,ey-3); ctx.lineTo(ex+14,ey-9+flap); ctx.stroke();
-        ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(ex-3, ey-2, 1.5, 0, Math.PI*2); ctx.arc(ex+3, ey-2, 1.5, 0, Math.PI*2); ctx.fill();
+        const tnow = performance.now();
+        const r = (e.r || 8) + 4;
+        const flap = Math.sin(tnow/110) * 6;
+        ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.beginPath(); ctx.ellipse(ex + 2, ey + 4, r + 2, r, 0, 0, Math.PI*2); ctx.fill();
+        const bodyGrad = ctx.createRadialGradient(ex-3, ey-3, 2, ex, ey, r);
+        bodyGrad.addColorStop(0, '#4a4e69'); bodyGrad.addColorStop(1, '#22223b');
+        ctx.fillStyle = bodyGrad; ctx.beginPath(); ctx.ellipse(ex, ey, r, r*0.9, 0, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = '#111'; ctx.beginPath(); ctx.moveTo(ex-6,ey-4); ctx.lineTo(ex-2,ey-10); ctx.lineTo(ex+2,ey-10); ctx.lineTo(ex+6,ey-4); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = '#2d3142'; ctx.beginPath(); ctx.moveTo(ex-10,ey-2); ctx.bezierCurveTo(ex-18,ey-8-flap, ex-20,ey+2, ex-8,ey+4); ctx.lineTo(ex-2,ey); ctx.fill();
+        ctx.beginPath(); ctx.moveTo(ex+10,ey-2); ctx.bezierCurveTo(ex+18,ey-8+flap, ex+20,ey+2, ex+8,ey+4); ctx.lineTo(ex+2,ey); ctx.fill();
+        ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(ex-3, ey-1, 2, 0, Math.PI*2); ctx.arc(ex+3, ey-1, 2, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(ex-3, ey-1, 1, 0, Math.PI*2); ctx.arc(ex+3, ey-1, 1, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = '#f1faee'; ctx.beginPath(); ctx.moveTo(ex-1,ey+3); ctx.lineTo(ex-3,ey+6); ctx.lineTo(ex,ey+5); ctx.moveTo(ex+1,ey+3); ctx.lineTo(ex+3,ey+6); ctx.lineTo(ex,ey+5); ctx.fill();
       } else if (e.type === 'rhino') {
-        const w = e.w || 26, h = e.h || 18;
-        ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(ex + 2, ey + 2, w, h);
-        const grad = ctx.createLinearGradient(ex, ey, ex, ey + h);
-        grad.addColorStop(0, '#adb5bd'); grad.addColorStop(1, '#6c757d');
-        ctx.fillStyle = grad; ctx.fillRect(ex, ey, w, h);
-        ctx.strokeStyle = '#2b2d42'; ctx.lineWidth = 2; ctx.strokeRect(ex, ey, w, h);
-        ctx.fillStyle = '#e9ecef'; ctx.beginPath(); ctx.moveTo(ex + w, ey + 6); ctx.lineTo(ex + w + 8, ey + 9); ctx.lineTo(ex + w, ey + 12); ctx.fill();
-        ctx.fillStyle = '#1d1d1d'; ctx.fillRect(ex + w - 8, ey + 5, 3, 3);
-        ctx.fillStyle = '#343a40'; ctx.fillRect(ex - 6, ey + h - 4, 10, 4);
+        const w = e.w || 28, h = e.h || 18;
+        const tnow = performance.now();
+        const step = Math.sin(tnow/180 + ex*0.02) * 1.2; // subtle bob for legs
+        const headBob = Math.sin(tnow/260 + ex*0.03) * 0.8;
+        const blink = ((tnow / 800) % 1) < 0.08; // brief blink
+        // Drop shadow
+        ctx.fillStyle = 'rgba(0,0,0,0.25)';
+        ctx.beginPath(); ctx.ellipse(ex + w*0.5 + 3, ey + h + 3, w*0.55, 3.5, 0, 0, Math.PI*2); ctx.fill();
+        // Body
+        const bodyGrad = ctx.createLinearGradient(ex, ey, ex, ey + h);
+        bodyGrad.addColorStop(0, '#a3a8af'); bodyGrad.addColorStop(1, '#6c757d');
+        ctx.fillStyle = bodyGrad;
+        if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(ex, ey, w, h, 5); ctx.fill(); }
+        else { ctx.fillRect(ex, ey, w, h); }
+        // Back plates
+        ctx.strokeStyle = 'rgba(43,45,66,0.5)'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(ex + 6, ey + 4); ctx.lineTo(ex + 12, ey + 2); ctx.lineTo(ex + 18, ey + 4); ctx.stroke();
+        // Belly line
+        ctx.strokeStyle = 'rgba(43,45,66,0.35)'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(ex + 4, ey + h - 4); ctx.lineTo(ex + w - 6, ey + h - 3); ctx.stroke();
+        // Legs
+        ctx.fillStyle = '#495057';
+        ctx.fillRect(ex + 4, ey + h - 3 + step*0.2, 6, 3);
+        ctx.fillRect(ex + Math.max(10, w - 14), ey + h - 3 - step*0.2, 6, 3);
+        // Head
+        const hx = ex + w - 6, hy = ey + h*0.45 + headBob, hr = Math.max(7, h*0.6);
+        const headGrad = ctx.createRadialGradient(hx-2, hy-2, 2, hx, hy, hr);
+        headGrad.addColorStop(0, '#b6bcc2'); headGrad.addColorStop(1, '#7a858e');
+        ctx.fillStyle = headGrad;
+        ctx.beginPath(); ctx.ellipse(hx, hy, hr*0.8, hr*0.7, 0, 0, Math.PI*2); ctx.fill();
+        // Horns (with slight shine)
+        const hornGrad = ctx.createLinearGradient(hx + 2, hy, hx + 10, hy);
+        hornGrad.addColorStop(0, '#eaecef'); hornGrad.addColorStop(1, '#caced3');
+        ctx.fillStyle = hornGrad;
+        // main horn
+        ctx.beginPath(); ctx.moveTo(hx + 6, hy - 2); ctx.lineTo(hx + 12, hy + 2); ctx.lineTo(hx + 6, hy + 6); ctx.closePath(); ctx.fill();
+        // small horn
+        ctx.beginPath(); ctx.moveTo(hx + 2, hy + 1); ctx.lineTo(hx + 6, hy + 3); ctx.lineTo(hx + 2, hy + 5); ctx.closePath(); ctx.fill();
+        // Ears
+        ctx.fillStyle = '#6d747c';
+        ctx.beginPath(); ctx.moveTo(hx - 8, hy - 6); ctx.lineTo(hx - 3, hy - 10); ctx.lineTo(hx - 1, hy - 4); ctx.closePath(); ctx.fill();
+        ctx.beginPath(); ctx.moveTo(hx - 2, hy - 7); ctx.lineTo(hx + 2, hy - 11); ctx.lineTo(hx + 4, hy - 6); ctx.closePath(); ctx.fill();
+        // inner ear tint
+        ctx.fillStyle = 'rgba(255,192,203,0.35)';
+        ctx.beginPath(); ctx.arc(hx - 3, hy - 8, 1.8, 0, Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.arc(hx + 2, hy - 9, 1.6, 0, Math.PI*2); ctx.fill();
+        // Eye + highlight
+        if (blink) {
+          ctx.strokeStyle = '#0b090a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(hx - 7, hy - 2); ctx.lineTo(hx - 5, hy - 2); ctx.stroke();
+        } else {
+          ctx.fillStyle = '#0b090a'; ctx.beginPath(); ctx.arc(hx - 6, hy - 2, 1.6, 0, Math.PI*2); ctx.fill();
+          ctx.fillStyle = 'rgba(255,255,255,0.8)'; ctx.beginPath(); ctx.arc(hx - 5.4, hy - 2.4, 0.6, 0, Math.PI*2); ctx.fill();
+        }
+        // Nostrils
+        ctx.fillStyle = '#2b2d42'; ctx.beginPath(); ctx.arc(hx - 1, hy + 4, 0.8, 0, Math.PI*2); ctx.arc(hx + 1, hy + 4, 0.8, 0, Math.PI*2); ctx.fill();
+        // Tail
+        ctx.strokeStyle = '#495057'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(ex - 2, ey + h - 6); ctx.lineTo(ex - 6, ey + h - 2); ctx.stroke();
+        // Outline
+        ctx.strokeStyle = '#2b2d42'; ctx.lineWidth = 2; ctx.beginPath(); ctx.rect(ex, ey, w, h); ctx.stroke();
       }
     }
 
@@ -1365,23 +1999,38 @@
       ctx.fillText(`pR ${Math.round(player.x + player.w)}  gR ${Math.round(g2.x + g2.w)}`, W - 200, H - 20);
     }
 
+    // FX puffs
+    if (fxPuffs && fxPuffs.length) {
+      const nowFx = performance.now();
+      for (const f of fxPuffs) {
+        const age = Math.max(0, Math.min(1, (nowFx - f.born) / f.life));
+        const alpha = (1 - age) * 0.6;
+        const fx = Math.round(f.x - (usingInfinite() ? cameraX : 0));
+        const fy = Math.round(f.y - (usingInfiniteWalls() ? cameraY : 0));
+        ctx.fillStyle = `rgba(120,110,100,${alpha.toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(fx, fy, f.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
     // Player (sync skin immediately even while shop is open)
     if (typeof window !== 'undefined' && typeof window.selectedSkinIndex === 'number') {
       selectedSkinIndex = window.selectedSkinIndex;
     }
     window.CURRENT_SKIN = skins[selectedSkinIndex];
-    drawPlayer(Math.round(player.x - cameraX), Math.round(player.y));
+    if (usingInfiniteWalls()) drawPlayer(Math.round(player.x), Math.round(player.y - cameraY));
+    else drawPlayer(Math.round(player.x - cameraX), Math.round(player.y));
 
     // HUD
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
     ctx.fillRect(10, 10, 240, 64);
     ctx.fillStyle = '#e8e9f3';
     ctx.font = '14px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
-    const levelLabel = usingInfinite() ? 'Infinite' : `${levelIndex + 1}/${getLevels().length}`;
+    const levelLabel = usingInfinite() ? 'Infinite' : (usingInfiniteWalls() ? 'Infinite Walls' : `${levelIndex + 1}/${getLevels().length}`);
     ctx.fillText(`Level: ${levelLabel}`, 20, 32);
     ctx.fillText(`Lives: ${lives}`, 20, 52);
     ctx.fillText(`Coins: ${coinsCollected}/${totalCoins}`, 120, 32);
-    ctx.fillText(`Difficulty: ${difficulties[selectedDifficultyIndex].name}`, 120, 52);
     ctx.fillText(`Mode: ${modes[selectedModeIndex].name}`, 260, 52);
 
     // Infinite mode debug: show player world coordinates (X/Y)
@@ -1391,6 +2040,12 @@
       ctx.fillStyle = '#e8e9f3';
       ctx.font = '12px ui-sans-serif, system-ui';
       ctx.fillText(`X: ${Math.round(player.x)}  Y: ${Math.round(player.y)}  CamX: ${Math.round(cameraX)}`, 20, 98);
+    } else if (usingInfiniteWalls()) {
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(10, 80, 220, 26);
+      ctx.fillStyle = '#e8e9f3';
+      ctx.font = '12px ui-sans-serif, system-ui';
+      ctx.fillText(`X: ${Math.round(player.x)}  Y: ${Math.round(player.y)}  CamY: ${Math.round(cameraY)}`, 20, 98);
     }
 
     // Power-up HUD (top-right)
@@ -1416,12 +2071,10 @@
     // Sync window state for shop UI
     if (typeof window !== 'undefined') {
       window.selectedSkinIndex = selectedSkinIndex;
-      window.selectedDifficultyIndex = selectedDifficultyIndex;
       window.selectedModeIndex = selectedModeIndex;
       window.coinsCollected = coinsCollected;
       window.shopTab = shopTab;
       window.skinSel = skinSel;
-      window.diffSel = diffSel;
       window.modeSel = modeSel;
     }
 
@@ -1452,12 +2105,15 @@
   }
 
   function loop() {
-    if (!won && !shopOpen) update();
+    if (!won && !shopOpen) {
+      if (onTitle) titleUpdate(); else update();
+    }
     render();
     requestAnimationFrame(loop);
   }
 
-  // Start loop (title screen shown first)
+  // Initialize title playground and start loop (title screen shown first)
+  setupTitleDemo();
   loop();
 })();
 
@@ -1627,25 +2283,17 @@ function buyOrEquipSkin(i) {
   }
 }
 
-function buyOrEquipDifficulty(i) {
-  const d = window.difficulties ? window.difficulties[i] : null;
-  if (!d) return;
-  if (d.owned) {
-    window.selectedDifficultyIndex = i;
-    return;
-  }
-  if (window.coinsCollected >= d.cost) {
-    window.coinsCollected -= d.cost;
-    d.owned = true;
-    window.selectedDifficultyIndex = i;
-  }
-}
-
 function drawShop() {
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
-  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  // Backdrop overlay + vignette
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(0, 0, W, H);
+  const vg = ctx.createRadialGradient(W/2, H/2, Math.min(W,H)*0.25, W/2, H/2, Math.max(W,H)*0.6);
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, 'rgba(0,0,0,0.25)');
+  ctx.fillStyle = vg;
   ctx.fillRect(0, 0, W, H);
 
   const panelW = 560, panelH = 320;
@@ -1653,6 +2301,8 @@ function drawShop() {
   const y = (H - panelH) / 2;
 
   function drawBakeryBackdrop() {
+    // soft drop shadow
+    roundRect(ctx, x + 6, y + 8, panelW, panelH, 14, 'rgba(0,0,0,0.25)', null);
     roundRect(ctx, x, y, panelW, panelH, 12, '#f6ede4', '#c9b8a6');
     const wallGrad = ctx.createLinearGradient(0, y, 0, y + panelH);
     wallGrad.addColorStop(0, 'rgba(255,255,255,0.35)');
@@ -1794,19 +2444,32 @@ function drawShop() {
 
   ctx.fillStyle = '#5b4636';
   ctx.font = '18px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
+  // small emblem
+  ctx.beginPath(); ctx.arc(x + 12, y + 26, 6, 0, Math.PI*2); ctx.fillStyle = '#ffcd69'; ctx.fill();
+  ctx.fillStyle = '#5b4636';
   ctx.fillText('Bakery Shop', x + 20, y + 32);
   ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
   ctx.fillText('P: Close  |  Left/Right: Tabs  |  Up/Down: Navigate  |  Enter/Space: Buy/Equip/Select', x + 20, y + 52);
 
   const tabY = y + 70;
   const tabW = 120, tabH = 28;
-  const tabs = ['Skins', 'Difficulty', 'Settings'];
+  const tabs = ['Skins', 'Modes'];
   for (let i = 0; i < tabs.length; i++) {
     const tx = x + 20 + i * (tabW + 10);
-    roundRect(ctx, tx, tabY, tabW, tabH, 6, i === window.shopTab ? '#ffe8cc' : '#f3d6b4', i === window.shopTab ? '#b06f2e' : '#c49256');
+    const active = i === window.shopTab;
+    roundRect(ctx, tx, tabY, tabW, tabH, 6, active ? '#ffe8cc' : '#f3d6b4', active ? '#b06f2e' : '#c49256');
+    // tiny icon
+    ctx.save();
+    ctx.translate(tx + 10, tabY + tabH/2);
+    ctx.strokeStyle = '#a0753e';
+    ctx.fillStyle = '#a0753e';
+    if (i === 0) { ctx.beginPath(); ctx.arc(0, 0, 4, 0, Math.PI*2); ctx.fill(); }
+    else if (i === 1) { ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(-4,0); ctx.lineTo(4,0); ctx.moveTo(0,-4); ctx.lineTo(0,4); ctx.stroke(); }
+    else { ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(-4,0); ctx.lineTo(0,-4); ctx.lineTo(4,0); ctx.lineTo(0,4); ctx.closePath(); ctx.stroke(); }
+    ctx.restore();
     ctx.fillStyle = '#5b4636';
     ctx.font = '14px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
-    ctx.fillText(tabs[i], tx + 14, tabY + 19);
+    ctx.fillText(tabs[i], tx + 20, tabY + 19);
   }
 
   const listX = x + 20;
@@ -1834,18 +2497,26 @@ function drawShop() {
       }
       const kind = pastryForSkin(s.key);
       drawPastry(listX + 20, ry + (rowH/2) - 2, kind);
-      ctx.fillStyle = s.body;
-      ctx.fillRect(listX + 40, ry + 10, 22, rowH - 22);
-      ctx.fillStyle = s.outline; ctx.fillRect(listX + 40, ry + 10, 22, 2);
+      // color swatch capsule
+      roundRect(ctx, listX + 40, ry + 10, 28, rowH - 22, 8, s.body, s.outline);
       ctx.fillStyle = '#5b4636';
       ctx.font = '14px ui-sans-serif, system-ui';
       const status = s.owned ? (i === window.selectedSkinIndex ? 'Selected' : 'Owned') : `Cost: ${s.cost}`;
       ctx.fillText(`${s.name}`, listX + 70, ry + 16);
       ctx.font = '12px ui-sans-serif, system-ui';
-      ctx.fillStyle = s.owned ? '#2f7a4a' : '#8a6a4b';
-      roundRect(ctx, listX + 70, ry + 20, 90, 14, 7, s.owned ? 'rgba(47,122,74,0.15)' : 'rgba(138,106,75,0.15)', s.owned ? '#2f7a4a' : '#8a6a4b');
-      ctx.fillStyle = s.owned ? '#2f7a4a' : '#8a6a4b';
-      ctx.fillText(`${status}`, listX + 76, ry + 31);
+      // status pill/button
+      const pillText = s.owned ? (i === window.selectedSkinIndex ? 'Selected' : 'Equip') : `Buy ${s.cost}`;
+      const owned = s.owned;
+      const isSelectedSkin = i === window.selectedSkinIndex;
+      const fillCol = owned ? (isSelectedSkin ? 'rgba(47,122,74,0.15)' : 'rgba(67,97,238,0.15)') : 'rgba(138,106,75,0.15)';
+      const strokeCol = owned ? (isSelectedSkin ? '#2f7a4a' : '#4361ee') : '#8a6a4b';
+      const textCol = strokeCol;
+      const pillX = listX + 70;
+      const pillY = ry + 20;
+      const pillW = 100;
+      roundRect(ctx, pillX, pillY, pillW, 14, 7, fillCol, strokeCol);
+      ctx.fillStyle = textCol;
+      ctx.fillText(pillText, pillX + 8, pillY + 11);
     }
     if (total > maxRows) {
       const trackX = x + panelW - 24;
@@ -1864,17 +2535,6 @@ function drawShop() {
       ctx.beginPath(); ctx.moveTo(trackX + trackW/2, trackY + trackH + 6); ctx.lineTo(trackX + trackW/2 - 3, trackY + trackH + 1); ctx.lineTo(trackX + trackW/2 + 3, trackY + trackH + 1); ctx.closePath(); ctx.fill();
     }
   } else if (window.shopTab === 1) {
-    for (let i = 0; i < window.difficulties.length; i++) {
-      const d = window.difficulties[i];
-      const ry = listY + i * rowH;
-      roundRect(ctx, listX, ry, panelW - 40, rowH - 6, 10, i === window.diffSel ? '#fff3e6' : '#fde9d6', '#e2bf92');
-      drawPastry(listX + 20, ry + (rowH/2) - 2, i % 2 === 0 ? 'cookie' : 'cake');
-      ctx.fillStyle = '#5b4636';
-      ctx.font = '14px ui-sans-serif, system-ui';
-      const status = d.owned ? (i === window.selectedDifficultyIndex ? 'Selected' : 'Owned') : `Cost: ${d.cost}`;
-      ctx.fillText(`${d.name} — ${status}`, listX + 50, ry + 24);
-    }
-  } else if (window.shopTab === 2) {
     for (let i = 0; i < window.modes.length; i++) {
       const m = window.modes[i];
       const ry = listY + i * rowH;
@@ -1891,8 +2551,18 @@ function drawShop() {
   ctx.font = '14px ui-sans-serif, system-ui';
   const coinX = x + panelW - 160;
   const coinY = y + 26;
+  // coin
   ctx.beginPath(); ctx.arc(coinX, coinY, 8, 0, Math.PI*2); ctx.fillStyle = '#f7e26b'; ctx.fill();
   ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.lineWidth = 2; ctx.stroke();
+  // sparkle
+  const tSpark = performance.now()/400;
+  ctx.save();
+  ctx.translate(coinX, coinY);
+  ctx.rotate(tSpark % (Math.PI*2));
+  ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(0,-10); ctx.lineTo(0,-6); ctx.moveTo(0,6); ctx.lineTo(0,10); ctx.moveTo(-10,0); ctx.lineTo(-6,0); ctx.moveTo(6,0); ctx.lineTo(10,0); ctx.stroke();
+  ctx.restore();
   ctx.fillStyle = '#5b4636';
   ctx.fillText(`Coins: ${window.coinsCollected}`, coinX + 14, y + 32);
 }

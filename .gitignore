@@ -4,3 +4,6 @@ dist/
 build/
 .env
 *.log
+
+key.txt
+key.txt.pub
