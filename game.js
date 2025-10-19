@@ -210,6 +210,11 @@
       for (let i=0;i<6;i++){ g.beginPath(); g.arc(Math.random()*size, Math.random()*size, 1.2, 0, Math.PI*2); g.fill(); }
       g.strokeStyle = 'rgba(0,0,0,0.12)';
       g.beginPath(); g.moveTo(4,6); g.quadraticCurveTo(10,14,6,20); g.stroke();
+    } else if (type === 'start') {
+      g.fillStyle = '#ffe066'; g.fillRect(0,0,size,size);
+      g.strokeStyle = 'rgba(0,0,0,0.15)'; g.lineWidth = 1;
+      for (let x=0;x<=size;x+=8){ g.beginPath(); g.moveTo(x+0.5,0); g.lineTo(x+0.5,size); g.stroke(); }
+      g.strokeStyle = 'rgba(255,255,255,0.2)'; g.beginPath(); g.moveTo(0,2); g.lineTo(size,2); g.stroke();
     } else if (type === 'death') {
       // lava
       const grad = g.createLinearGradient(0,0,0,size);
@@ -313,6 +318,8 @@
   const INF_PLATFORM_MAX_Y = 380;
   const INF_PLATFORM_HEIGHT = 16;
   const INF_PLATFORM_WIDTHS = [70, 100, 120];
+  let airJumpsLeft = 0;
+  let jumpedThisFrame = false;
 
   // Power-ups state
   let speedUntil = 0;
@@ -744,6 +751,7 @@
     player.onGround = false;
     // reset temporary boosts
     speedUntil = 0; superjumpUntil = 0;
+    airJumpsLeft = (skins[selectedSkinIndex]?.key === 'penguin') ? 1 : 0;
     levelStartAt = performance.now();
     // Fill runtime coins list
     levelCoins = (L.coins || []).map(c => ({...c, taken:false, float: Math.random()*Math.PI*2 }));
@@ -788,23 +796,24 @@
     player.vx = 0; player.vy = 0;
     player.onGround = false;
     cameraX = 0;
-    // Start near left
-    player.x = 40; player.y = 200;
+    
     infPlatforms = [];
     infCoins = [];
     infSpawnX = 0;
-    // Base ground
     infPlatforms.push({ x: -200, y: 420, w: 1200, h: 30, t: 'normal' });
+    const sX = 20, sY = 320, sW = 120;
+    infPlatforms.push({ x: sX, y: sY, w: sW, h: INF_PLATFORM_HEIGHT, t: 'start' });
+    player.x = sX + 10; player.y = sY - player.h - 1;
     infSpawnX = 0;
-    lastPlatX = 40; lastPlatY = 320; lastPlatW = 120;
-    // Seed ahead
+    lastPlatX = sX; lastPlatY = sY; lastPlatW = sW;
+    
     while (infSpawnX < 1000) generateInfiniteChunk();
-    // reset powerups and builder in infinite
     infPowerups = [];
     builderBlocks = [];
     builderCharges = 0;
     infEnemies = [];
     speedUntil = 0; superjumpUntil = 0;
+    airJumpsLeft = (skins[selectedSkinIndex]?.key === 'penguin') ? 1 : 0;
     levelStartAt = performance.now();
   }
 
@@ -825,6 +834,7 @@
     const rW = Math.random();
     let acc = 0, platW = 100;
     for (const it of widthWeights) { acc += it.p; if (rW <= acc) { platW = it.w; break; } }
+    if (Math.random() < 0.3) platW = Math.min(160, platW + 20);
     const types = ['normal','sticky','ice'];
     // bias towards trickier surfaces with progress
     const typeWeights = [
@@ -836,8 +846,8 @@
     acc = 0; let type = 'normal';
     for (const it of typeWeights) { acc += it.p; if (rT <= acc) { type = it.t; break; } }
     // Strict safe distances (tuned to physics)
-    const maxHorizGap = Math.round(100 + 10 * prog); // grows slightly but stays fair
-    const minHorizGap = 70;
+    const maxHorizGap = 130;
+    const minHorizGap = 90;
     const maxVertDelta = Math.round(50 + 10 * prog);
     let px = 0, platY = 0;
     let ok = false;
@@ -853,74 +863,114 @@
     }
     // As a last resort, place directly ahead at fixed offsets
     if (!ok) {
-      px = Math.min(endX - platW - 20, lastPlatX + 90);
+      px = Math.min(endX - platW - 20, lastPlatX + Math.round(randBetween(minHorizGap, maxHorizGap)));
       platY = Math.max(INF_PLATFORM_MIN_Y, Math.min(INF_PLATFORM_MAX_Y, lastPlatY));
     }
-    // Helper to add a platform and coins safely
-    function addPlat(ax, ay, aw, at) {
+    function okPlace(ax, ay, aw, ah) {
+      const margin = 6;
+      const bx = ax - margin, by = ay - margin, bw = aw + margin*2, bh = ah + margin*2;
+      for (let i = Math.max(0, infPlatforms.length - 300); i < infPlatforms.length; i++) {
+        const p = infPlatforms[i];
+        if (aabb(bx, by, bw, bh, p.x, p.y, p.w, p.h)) return false;
+        const horizOverlap = !(ax + aw + margin <= p.x || ax - margin >= p.x + p.w);
+        if (horizOverlap) {
+          const minClear = 12;
+          if (!(ay + ah + minClear <= p.y || ay >= p.y + p.h + minClear)) return false;
+        }
+      }
+      return true;
+    }
+    function addPlat(ax, ay, aw, at, primary=false) {
       if (ax < startX + 20 || ax + aw > endX - 10) return false;
       ay = Math.max(INF_PLATFORM_MIN_Y, Math.min(INF_PLATFORM_MAX_Y, ay));
+      if (!okPlace(ax, ay, Math.round(aw), INF_PLATFORM_HEIGHT)) return false;
       infPlatforms.push({ x: Math.round(ax), y: Math.round(ay), w: Math.round(aw), h: INF_PLATFORM_HEIGHT, t: at });
-      // coins per platform
       const cN = Math.max(1, Math.min(3, Math.floor(aw / 50)));
       for (let i=0;i<cN;i++) {
         const cx = ax + (i+1) * (aw/(cN+1));
         const cy = ay - 24 - Math.random()*10;
         infCoins.push({ x: Math.round(cx), y: Math.round(cy), r: 10, taken: false, float: Math.random()*Math.PI*2 });
       }
-      lastPlatX = Math.round(ax); lastPlatY = Math.round(ay); lastPlatW = Math.round(aw);
+      if (primary) { lastPlatX = Math.round(ax); lastPlatY = Math.round(ay); lastPlatW = Math.round(aw); }
       return true;
     }
 
     // Try emitting a pattern for variety
     let emitted = false;
+    let placedPrimary = false;
     const canFit = (px + platW + 40) <= (endX - 10);
     const rPat = Math.random();
     if (!emitted && canFit && rPat < 0.28) {
       // Stairs (up or down), 3-4 steps
       const dir = Math.random() < 0.5 ? -1 : 1; // -1 up, 1 down (screen y grows downward)
       const steps = Math.random() < 0.5 ? 3 : 4;
-      const stepDx = 55, stepDy = 18 * dir;
+      const stepDx = minHorizGap, stepDy = 18 * dir;
       let sx = px, sy = platY;
-      for (let k=0;k<steps;k++) {
+      const maxSteps = 2;
+      for (let k=0;k<maxSteps;k++) {
         const w = Math.max(60, platW - k*10);
         const tLocal = (Math.random() < 0.5) ? type : choice(['normal','ice','sticky']);
-        if (!addPlat(sx, sy, w, tLocal)) { emitted = false; break; } else emitted = true;
+        if (!addPlat(sx, sy, w, tLocal, k===0)) { emitted = false; break; } else { emitted = true; if (k===0) placedPrimary = true; }
         sx += stepDx; sy += stepDy;
       }
     }
     if (!emitted && canFit && rPat >= 0.28 && rPat < 0.55) {
       // Double platform (neighbor at small vertical offset)
       const t1 = type; const t2 = choice(['normal','ice','sticky']);
-      emitted = addPlat(px, platY, platW, t1) && addPlat(px + Math.min(80, Math.max(50, platW - 20)), platY + (Math.random()<0.5?18:-18), Math.max(60, platW - 20), t2);
+      const ok1 = addPlat(px, platY, platW, t1, true); if (ok1) placedPrimary = true;
+      const ok2 = ok1 && addPlat(px + Math.round(randBetween(minHorizGap, maxHorizGap)), platY + (Math.random()<0.5?18:-18), Math.max(60, platW - 20), t2, false);
+      emitted = ok1 && ok2;
     }
     if (!emitted && rPat >= 0.55 && rPat < 0.75) {
       // Mini pillar above
-      emitted = addPlat(px, platY, platW, type);
+      const okp = addPlat(px, platY, platW, type, true); if (okp) placedPrimary = true; emitted = okp;
       if (emitted) {
         const miniW = 50;
-        addPlat(px + platW*0.5 - miniW*0.5, platY - 60, miniW, choice(['normal','ice']));
+        addPlat(px + platW*0.5 - miniW*0.5, platY - 60, miniW, choice(['normal','ice']), false);
       }
     }
     if (!emitted) {
       // Single fallback
-      addPlat(px, platY, platW, type);
+      const okp2 = addPlat(px, platY, platW, type, true); if (okp2) placedPrimary = true;
     }
-    // Try to add a secondary small platform in the same chunk for density
-    if (Math.random() < 0.8) {
-      const dx2 = Math.round(randBetween(50, 90));
+    if (Math.random() < 0.95) {
+      const dx2 = Math.round(randBetween(minHorizGap, maxHorizGap));
       const px2 = px + dx2;
       const w2 = Math.max(60, Math.min(100, platW - 10));
       const y2 = platY + (Math.random() < 0.5 ? 18 : -18);
-      addPlat(px2, y2, w2, choice(['normal','ice','sticky']));
+      addPlat(px2, y2, w2, choice(['normal','ice','sticky']), false);
     }
-    // Tertiary micro-platform attempt
-    if (Math.random() < 0.6) {
-      const dx3 = Math.round(randBetween(30, 70));
+    if (Math.random() < 0.8) {
+      const dx2b = Math.round(randBetween(minHorizGap, maxHorizGap));
+      const px2b = px + dx2b + 20;
+      const w2b = 60;
+      const y2b = platY + (Math.random() < 0.5 ? 24 : -24);
+      addPlat(px2b, y2b, w2b, choice(['normal','ice','sticky']), false);
+    }
+    if (Math.random() < 0.85) {
+      const dx3 = Math.round(randBetween(minHorizGap, maxHorizGap));
       const px3 = px + dx3;
       const w3 = 50;
       const y3 = platY + (Math.random() < 0.5 ? 36 : -36);
-      addPlat(px3, y3, w3, choice(['normal','ice']));
+      addPlat(px3, y3, w3, choice(['normal','ice']), false);
+    }
+    for (let extra = 0; extra < 3; extra++) {
+      const ex = Math.min(endX - 100, Math.max(startX + 40, px + Math.round(randBetween(minHorizGap, maxHorizGap))));
+      const ew = choice([50, 60, 70]);
+      const ey = Math.round(Math.max(INF_PLATFORM_MIN_Y, Math.min(INF_PLATFORM_MAX_Y, platY + randBetween(-maxVertDelta, maxVertDelta))));
+      addPlat(ex, ey, ew, choice(['normal','ice','sticky']), false);
+    }
+    // If no primary platform was placed due to overlaps, force a reachable placement with several attempts
+    if (!placedPrimary) {
+      for (let tries=0; tries<8 && !placedPrimary; tries++) {
+        const pxf = Math.min(endX - platW - 20, Math.max(startX + 40, lastPlatX + Math.round(randBetween(minHorizGap, maxHorizGap))));
+        // scan multiple Y candidates to avoid vertical stacking in same column
+        for (let yi=0; yi<6 && !placedPrimary; yi++) {
+          let pyf = Math.round(lastPlatY + randBetween(-maxVertDelta, maxVertDelta));
+          pyf = Math.max(INF_PLATFORM_MIN_Y, Math.min(INF_PLATFORM_MAX_Y, pyf));
+          if (addPlat(pxf, pyf, platW, type, true)) { placedPrimary = true; break; }
+        }
+      }
     }
     infSpawnX = endX;
     // occasionally spawn a powerup (slightly fewer as progress increases)
@@ -993,6 +1043,7 @@
       }
       return;
     }
+    jumpedThisFrame = false;
     // Effective physics from difficulty
     const diff = difficulties[selectedDifficultyIndex];
     const effGravity = GRAVITY * diff.g;
@@ -1030,6 +1081,7 @@
     collideAxis('x');
 
     // Apply Y movement and resolve collisions on Y
+    const wasOnGround = player.onGround;
     player.y += player.vy;
     player.onGround = false;
     collideAxis('y');
@@ -1039,6 +1091,11 @@
       cameraX = Math.max(0, player.x - 200);
       // Spawn more ahead
       while (infSpawnX < cameraX + 1000) generateInfiniteChunk();
+      const cullX = cameraX - 500;
+      if (infPlatforms.length > 0) infPlatforms = infPlatforms.filter(p => (p.x + p.w) > cullX);
+      if (infCoins.length > 0) infCoins = infCoins.filter(c => (c.x > cullX) && !c.taken);
+      if (infPowerups.length > 0) infPowerups = infPowerups.filter(pu => (pu.x > cullX) && !pu.taken);
+      if (infEnemies.length > 0) infEnemies = infEnemies.filter(e => (e.x || 0) > cullX - 100);
     } else {
       cameraX = 0;
     }
@@ -1059,12 +1116,22 @@
       player.onGround = false;
       coyoteFrames = 0;
       jumpBufferFrames = 0;
+      jumpedThisFrame = true;
+    }
+    if (jumpPressed && !player.onGround && !jumpedThisFrame && airJumpsLeft > 0) {
+      player.vy = effJump * jumpBoost;
+      airJumpsLeft -= 1;
+      jumpBufferFrames = 0;
+      jumpedThisFrame = true;
     }
 
     // Friction when on ground and no input
     if (!left && !right && player.onGround) {
       player.vx *= surfaceFriction;
       if (Math.abs(player.vx) < 0.05) player.vx = 0;
+    }
+    if (player.onGround && !wasOnGround) {
+      airJumpsLeft = (skins[selectedSkinIndex]?.key === 'penguin') ? 1 : 0;
     }
 
     // Floor death (fell)
@@ -1247,29 +1314,25 @@
       if (ex < -100 || ex > W + 100 || ey < -100 || ey > H + 100) continue;
       if (e.type === 'gnat') {
         const r = (e.r || 8) + 2;
-        // shadow
-        ctx.fillStyle = 'rgba(0,0,0,0.25)';
-        ctx.beginPath(); ctx.arc(ex + 2, ey + 2, r, 0, Math.PI*2); ctx.fill();
-        // body
-        ctx.fillStyle = '#2f2f2f';
-        ctx.beginPath(); ctx.arc(ex, ey, r, 0, Math.PI*2); ctx.fill();
-        // outline
+        ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.beginPath(); ctx.arc(ex + 2, ey + 2, r, 0, Math.PI*2); ctx.fill();
+        const grad = ctx.createRadialGradient(ex-2, ey-2, 2, ex, ey, r);
+        grad.addColorStop(0, '#6c757d'); grad.addColorStop(1, '#343a40');
+        ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(ex, ey, r, 0, Math.PI*2); ctx.fill();
         ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(ex, ey, r, 0, Math.PI*2); ctx.stroke();
-        // wings
         ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(ex-8,ey-3); ctx.lineTo(ex-14,ey-9); ctx.moveTo(ex+8,ey-3); ctx.lineTo(ex+14,ey-9); ctx.stroke();
+        const flap = Math.sin(performance.now()/120) * 4;
+        ctx.beginPath(); ctx.moveTo(ex-8,ey-3); ctx.lineTo(ex-14,ey-9-flap); ctx.moveTo(ex+8,ey-3); ctx.lineTo(ex+14,ey-9+flap); ctx.stroke();
+        ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(ex-3, ey-2, 1.5, 0, Math.PI*2); ctx.arc(ex+3, ey-2, 1.5, 0, Math.PI*2); ctx.fill();
       } else if (e.type === 'rhino') {
         const w = e.w || 26, h = e.h || 18;
-        // shadow
         ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(ex + 2, ey + 2, w, h);
-        // body
-        ctx.fillStyle = '#8d99ae'; ctx.fillRect(ex, ey, w, h);
-        // outline
+        const grad = ctx.createLinearGradient(ex, ey, ex, ey + h);
+        grad.addColorStop(0, '#adb5bd'); grad.addColorStop(1, '#6c757d');
+        ctx.fillStyle = grad; ctx.fillRect(ex, ey, w, h);
         ctx.strokeStyle = '#2b2d42'; ctx.lineWidth = 2; ctx.strokeRect(ex, ey, w, h);
-        // horn
         ctx.fillStyle = '#e9ecef'; ctx.beginPath(); ctx.moveTo(ex + w, ey + 6); ctx.lineTo(ex + w + 8, ey + 9); ctx.lineTo(ex + w, ey + 12); ctx.fill();
-        // eye
         ctx.fillStyle = '#1d1d1d'; ctx.fillRect(ex + w - 8, ey + 5, 3, 3);
+        ctx.fillStyle = '#343a40'; ctx.fillRect(ex - 6, ey + h - 4, 10, 4);
       }
     }
 
