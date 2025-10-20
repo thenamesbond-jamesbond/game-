@@ -18,6 +18,11 @@
     infWallsPlatforms = [];
     builderBlocks = [];
     coinsCollected = 0; totalCoins = 0; // coins not used here yet
+    // Auto-select Bird skin for Infinite Walls (visual only; ownership unaffected)
+    try {
+      const birdIndex = skins.findIndex(s => s.key === 'bird');
+      if (birdIndex >= 0) { selectedSkinIndex = birdIndex; }
+    } catch(_) {}
     // Place player near bottom center
     player.x = W/2 - player.w/2;
     player.y = H - 80;
@@ -31,6 +36,9 @@
     // seed a couple ledges
     infWallsPlatforms.push({ x: wallsLastPlatX - 120, y: H - 140, w: 100, h: 16, t: 'normal' });
     infWallsPlatforms.push({ x: wallsLastPlatX + 140, y: H - 200, w: 100, h: 16, t: 'normal' });
+    // Triple jump: start with 2 air jumps available
+    airJumpsLeft = 2;
+    birdFlightUntil = 0;
   }
 
   function generateInfiniteWallsChunk() {
@@ -331,7 +339,7 @@
     }
     if (!shopOpen) return;
     // While shop is open, handle navigation
-    const TAB_COUNT = 2;
+    const TAB_COUNT = 3;
     if (e.key === 'ArrowLeft') shopTab = (shopTab - 1 + TAB_COUNT) % TAB_COUNT;
     if (e.key === 'ArrowRight') shopTab = (shopTab + 1) % TAB_COUNT;
     if (shopTab === 0) {
@@ -348,7 +356,18 @@
       if (e.key === 'Home') modeSel = 0;
       if (e.key === 'End') modeSel = modes.length - 1;
       if (e.key === 'Enter' || e.key === ' ') selectMode(modeSel);
+    } else if (shopTab === 2) {
+      // Upgrades tab
+      if (typeof window.upgradeSel !== 'number') window.upgradeSel = 0;
+      const optCount = 1; // only stamina for now
+      if (e.key === 'ArrowUp') window.upgradeSel = (window.upgradeSel - 1 + optCount) % optCount;
+      if (e.key === 'ArrowDown') window.upgradeSel = (window.upgradeSel + 1) % optCount;
+      if (e.key === 'Enter' || e.key === ' ') {
+        if (typeof window.buyUpgradeStamina === 'function' && window.upgradeSel === 0) window.buyUpgradeStamina();
+      }
     }
+    if (e.key === 'Escape' || e.key === 'p' || e.key === 'P') { shopOpen = false; return; }
+    return;
   });
 
   addEventListener('mousedown', () => { if (onTitle) startFromTitle(); });
@@ -388,6 +407,10 @@
   const coinColor = '#f7e26b';
   const coinShineColor = '#fff6a9';
 
+  // Upgrades and stamina (bird flight)
+  let upgrades = { staminaLevel: 0 };
+  let birdFlightUntil = 0; // timestamp ms until which flight is active
+
   // Rendering helpers are now provided by rendering.js (makePlatformPattern, drawSkyBackground,
   // drawPlatformTextured, drawGoalPretty, roundRect, drawPlayer)
 
@@ -400,6 +423,7 @@
     { key: 'strawberry', name: 'Strawberry', body: '#ff4d6d', outline: '#a4161a', cost: 7,  owned: false },
     { key: 'tomato',   name: 'Tomato',    body: '#ff3b30', outline: '#b71c1c', cost: 7,  owned: false },
     { key: 'penguin',  name: 'Penguin',   body: '#4d4d4d', outline: '#1f1f1f', cost: 12, owned: false },
+    { key: 'bird',     name: 'Bird',      body: '#87ceeb', outline: '#1e6091', cost: 18, owned: false },
   ];
 
   // Walls Mode Levels: wall-centric layouts for practicing wall jumps/slides
@@ -1079,7 +1103,7 @@
     infCoins = [];
     infSpawnX = 0;
     infPlatforms.push({ x: -200, y: 420, w: 1200, h: 30, t: 'normal' });
-    const sX = 20, sY = 320, sW = 120;
+    const sW = 120; const sY = 320; const sX = Math.round(W/2 - sW/2);
     infPlatforms.push({ x: sX, y: sY, w: sW, h: INF_PLATFORM_HEIGHT, t: 'start' });
     player.x = sX + 10; player.y = sY - player.h - 1;
     infSpawnX = 0;
@@ -1463,11 +1487,29 @@
         fxPuffs.push({ x: baseX, y: baseY, vx: Math.cos(ang) * spd * (side>0?-1:1), vy: Math.sin(ang) * spd, born: performance.now(), life: 260, r: 3 + Math.random()*2 });
       }
     }
-    if (jumpPressed && !player.onGround && !jumpedThisFrame && airJumpsLeft > 0) {
-      player.vy = effJump * jumpBoost;
-      airJumpsLeft -= 1;
-      jumpBufferFrames = 0;
-      jumpedThisFrame = true;
+    // Bird stamina flight: infinite air jumps while stamina active
+    const nowMs = performance.now();
+    const isBird = (skins[selectedSkinIndex]?.key === 'bird');
+    const baseStaminaMs = 7000 + (upgrades.staminaLevel||0) * 2000; // 7s + 2s per upgrade
+    if (jumpPressed && !player.onGround && !jumpedThisFrame) {
+      let canAir = false;
+      if (isBird) {
+        if (birdFlightUntil > nowMs) {
+          canAir = true;
+        } else if (birdFlightUntil === 0) {
+          // start flight window on first in-air jump
+          birdFlightUntil = nowMs + baseStaminaMs;
+          canAir = true;
+        }
+      } else if (airJumpsLeft > 0) {
+        canAir = true;
+        airJumpsLeft -= 1;
+      }
+      if (canAir) {
+        player.vy = effJump * jumpBoost;
+        jumpBufferFrames = 0;
+        jumpedThisFrame = true;
+      }
     }
 
     // Wall coyote logic (short grace window to recognize recent wall contact)
@@ -1494,7 +1536,12 @@
       if (Math.abs(player.vx) < 0.05) player.vx = 0;
     }
     if (player.onGround && !wasOnGround) {
-      airJumpsLeft = (skins[selectedSkinIndex]?.key === 'penguin') ? 1 : 0;
+      if (usingInfiniteWalls()) {
+        airJumpsLeft = 2; // triple jump: 1 ground jump + 2 air jumps
+      } else {
+        airJumpsLeft = (skins[selectedSkinIndex]?.key === 'penguin') ? 1 : 0;
+      }
+      birdFlightUntil = 0; // reset stamina on landing
     }
 
     // Floor death (fell)
@@ -1937,6 +1984,22 @@
     }
     if (nowHud < speedUntil) drawHudBadge('Speed', speedUntil - nowHud, '#4cc9f0');
     if (nowHud < superjumpUntil) drawHudBadge('Super Jump', superjumpUntil - nowHud, '#90be6d');
+    // Bird stamina wheel HUD (top-left corner)
+    if (skins[selectedSkinIndex]?.key === 'bird') {
+      const remain = Math.max(0, birdFlightUntil - performance.now());
+      const full = 7000 + (upgrades.staminaLevel||0) * 2000;
+      const frac = Math.max(0, Math.min(1, remain / full));
+      const cxHud = 26, cyHud = 26, rHud = 16;
+      ctx.save();
+      // background ring
+      ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(cxHud, cyHud, rHud, 0, Math.PI*2); ctx.stroke();
+      // green arc
+      ctx.strokeStyle = '#2ecc71'; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(cxHud, cyHud, rHud, -Math.PI/2, -Math.PI/2 + frac * Math.PI*2, false); ctx.stroke();
+      // icon dot
+      ctx.fillStyle = '#2ecc71'; ctx.beginPath(); ctx.arc(cxHud, cyHud, 3, 0, Math.PI*2); ctx.fill();
+      ctx.restore();
+    }
     if (builderCharges > 0) {
       ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(hudX, hudY, 170, 22);
       ctx.fillStyle = '#f4a261'; ctx.font = '12px ui-sans-serif, system-ui';
@@ -1944,14 +2007,35 @@
       hudY += 24;
     }
 
-    // Sync window state for shop UI
+    // Sync window state and shop UI
     if (typeof window !== 'undefined') {
-      window.selectedSkinIndex = selectedSkinIndex;
-      window.selectedModeIndex = selectedModeIndex;
-      window.coinsCollected = coinsCollected;
-      window.shopTab = shopTab;
-      window.skinSel = skinSel;
-      window.modeSel = modeSel;
+      if (shopOpen) {
+        if (typeof window.selectedSkinIndex === 'number') selectedSkinIndex = window.selectedSkinIndex;
+        if (typeof window.coinsCollected === 'number') coinsCollected = window.coinsCollected;
+        if (typeof window.shopTab === 'number') shopTab = window.shopTab;
+        if (typeof window.skinSel === 'number') skinSel = window.skinSel;
+        if (typeof window.modeSel === 'number') modeSel = window.modeSel;
+        if (window.upgrades && typeof window.upgrades.staminaLevel === 'number') upgrades.staminaLevel = window.upgrades.staminaLevel;
+        // ensure arrays are available to shop rendering while open
+        window.skins = skins;
+        window.modes = modes;
+      } else {
+        window.selectedSkinIndex = selectedSkinIndex;
+        window.selectedModeIndex = selectedModeIndex;
+        window.coinsCollected = coinsCollected;
+        window.shopTab = shopTab;
+        window.skinSel = skinSel;
+        window.modeSel = modeSel;
+        window.upgrades = window.upgrades || { staminaLevel: 0 };
+        window.upgrades.staminaLevel = upgrades.staminaLevel;
+        window.skins = skins;
+        window.modes = modes;
+      }
+    }
+
+    // Ensure renderer sees the selected skin
+    if (typeof window !== 'undefined') {
+      window.CURRENT_SKIN = skins[selectedSkinIndex];
     }
 
     // Shop overlay

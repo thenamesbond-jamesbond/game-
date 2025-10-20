@@ -184,7 +184,7 @@
 
     const tabY = y + 70;
     const tabW = 120, tabH = 28;
-    const tabs = ['Skins', 'Modes'];
+    const tabs = ['Skins', 'Modes', 'Upgrades'];
     for (let i = 0; i < tabs.length; i++) {
       const tx = x + 20 + i * (tabW + 10);
       const active = i === window.shopTab;
@@ -196,6 +196,7 @@
       ctx.fillStyle = '#a0753e';
       if (i === 0) { ctx.beginPath(); ctx.arc(0, 0, 4, 0, Math.PI*2); ctx.fill(); }
       else if (i === 1) { ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(-4,0); ctx.lineTo(4,0); ctx.moveTo(0,-4); ctx.lineTo(0,4); ctx.stroke(); }
+      else if (i === 2) { ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0,0,4,0,Math.PI*2); ctx.moveTo(-4,0); ctx.lineTo(4,0); ctx.stroke(); }
       else { ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(-4,0); ctx.lineTo(0,-4); ctx.lineTo(4,0); ctx.lineTo(0,4); ctx.closePath(); ctx.stroke(); }
       ctx.restore();
       ctx.fillStyle = '#5b4636';
@@ -207,6 +208,8 @@
     const listY = y + 110;
     const rowH = 38;
     if (window.shopTab === 0) {
+      // guard: ensure skins provided
+      if (!window.skins) window.skins = (window.LEVELS && window.LEVELS.length>=0 && window.skins) || [];
       const total = window.skins.length;
       const maxRows = 7;
       const start = Math.min(Math.max(window.skinSel - Math.floor(maxRows/2), 0), Math.max(0, total - maxRows));
@@ -276,6 +279,31 @@
         const status = (i === window.selectedModeIndex) ? 'Selected' : 'Press Enter to Select';
         ctx.fillText(`${m.name} — ${status}`, listX + 50, ry + 24);
       }
+    } else if (window.shopTab === 2) {
+      // Upgrades panel
+      const lvl = (window.upgrades && typeof window.upgrades.staminaLevel === 'number') ? window.upgrades.staminaLevel : 0;
+      const maxLvl = 5;
+      const costs = [10, 20, 35, 55, 80];
+      const nextCost = lvl >= maxLvl ? null : costs[Math.min(lvl, costs.length - 1)];
+      // panel item row
+      const ry = listY;
+      roundRect(ctx, listX, ry, panelW - 40, rowH - 6, 10, '#fff3e6', '#e2bf92');
+      // icon (small stamina wheel)
+      ctx.strokeStyle = '#2ecc71'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(listX + 20, ry + rowH/2 - 2, 8, 0, Math.PI*2); ctx.stroke();
+      ctx.fillStyle = '#2ecc71'; ctx.beginPath(); ctx.arc(listX + 20, ry + rowH/2 - 2, 2, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#5b4636'; ctx.font = '14px ui-sans-serif, system-ui';
+      const secs = 7 + lvl * 2;
+      ctx.fillText(`Stamina Flight — Level ${lvl}/${maxLvl} — ${secs}s`, listX + 40, ry + 16);
+      ctx.font = '12px ui-sans-serif, system-ui';
+      const pillText = (lvl >= maxLvl) ? 'Maxed' : (window.coinsCollected >= nextCost ? `Buy ${nextCost}` : `Need ${nextCost}`);
+      const canBuy = (lvl < maxLvl) && (window.coinsCollected >= nextCost);
+      const fillCol = canBuy ? 'rgba(47,122,74,0.15)' : 'rgba(138,106,75,0.15)';
+      const strokeCol = canBuy ? '#2f7a4a' : '#8a6a4b';
+      const pillX = listX + 300; const pillY = ry + 20; const pillW = 110;
+      roundRect(ctx, pillX, pillY, pillW, 14, 7, fillCol, strokeCol);
+      ctx.fillStyle = strokeCol; ctx.fillText(pillText, pillX + 8, pillY + 11);
+      // hint
+      ctx.fillStyle = '#8a6a4b'; ctx.fillText('Press Enter/Space to buy', listX + 40, ry + 30);
     }
 
     ctx.fillStyle = '#5b4636';
@@ -298,4 +326,19 @@
     ctx.fillText(`Coins: ${window.coinsCollected}`, coinX + 14, y + 32);
   }
   window.drawShop = drawShop;
+
+  // Upgrade purchase: stamina
+  function buyUpgradeStamina() {
+    if (!window.upgrades) window.upgrades = { staminaLevel: 0 };
+    const maxLvl = 5;
+    const costs = [10, 20, 35, 55, 80];
+    const lvl = window.upgrades.staminaLevel || 0;
+    if (lvl >= maxLvl) return;
+    const cost = costs[Math.min(lvl, costs.length - 1)];
+    if (window.coinsCollected >= cost) {
+      window.coinsCollected -= cost;
+      window.upgrades.staminaLevel = Math.min(maxLvl, lvl + 1);
+    }
+  }
+  window.buyUpgradeStamina = buyUpgradeStamina;
 })();

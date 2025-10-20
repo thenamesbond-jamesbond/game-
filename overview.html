@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Project JS Overview</title>
+  <style>
+    :root { --fg:#1f2937; --muted:#6b7280; --accent:#2563eb; --bg:#f9fafb; }
+    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; color: var(--fg); background: var(--bg); margin: 0; }
+    header { padding: 24px 20px; background: white; border-bottom: 1px solid #e5e7eb; position: sticky; top: 0; }
+    h1 { margin: 0 0 4px; font-size: 22px; }
+    p.sub { margin: 0; color: var(--muted); }
+    main { max-width: 980px; margin: 0 auto; padding: 20px; }
+    section { background: white; border: 1px solid #e5e7eb; border-radius: 10px; padding: 16px 18px; margin: 14px 0; }
+    h2 { font-size: 18px; margin: 0 0 10px; }
+    h3 { font-size: 15px; margin: 12px 0 6px; color: var(--accent); }
+    ul { margin: 6px 0 10px 20px; }
+    code, a { color: var(--accent); text-decoration: none; }
+    .file { display: grid; grid-template-columns: 240px 1fr; gap: 14px; align-items: start; padding: 12px 0; border-top: 1px dashed #e5e7eb; }
+    .file:first-of-type { border-top: 0; }
+    .path { font-weight: 600; }
+    .funcs code { background: #f3f4f6; padding: 1px 6px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>JavaScript Files Overview</h1>
+    <p class="sub">Quick reference of scripts and their responsibilities</p>
+  </header>
+  <main>
+    <section>
+      <h2>Files</h2>
+
+      <div class="file">
+        <div class="path"><a href="rendering.js">rendering.js</a></div>
+        <div class="desc">
+          <div>Rendering helpers and player rendering.</div>
+          <ul>
+            <li>Platform textures: <code>makePlatformPattern()</code>, <code>drawPlatformTextured()</code></li>
+            <li>Background: <code>drawSkyBackground()</code></li>
+            <li>Shapes: <code>roundRect()</code></li>
+            <li>Player sprite: <code>drawPlayer()</code> (supports fruit, penguin, bird with wing flap)</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="file">
+        <div class="path"><a href="movement.js">movement.js</a></div>
+        <div class="desc">
+          <div>Input handling module.</div>
+          <ul>
+            <li>Shared key state: <code>window.keys</code></li>
+            <li>Keyboard listeners for arrows/WASD/space</li>
+            <li>Mobile controls binding: <code>bindMobileControls()</code> for <code>#btn-left</code>, <code>#btn-right</code>, <code>#btn-jump</code></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="file">
+        <div class="path"><a href="menu/ui.js">menu/ui.js</a></div>
+        <div class="desc">
+          <div>Shop and menu UI (Skins, Modes, Upgrades).</div>
+          <ul>
+            <li>Open overlay renderer: <code>drawShop()</code></li>
+            <li>Skin purchase/equip: <code>buyOrEquipSkin()</code></li>
+            <li>Upgrades: <code>buyUpgradeStamina()</code> (Stamina Flight levels)</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="file">
+        <div class="path"><a href="levels.js">levels.js</a></div>
+        <div class="desc">
+          <div>Levels helper.</div>
+          <ul>
+            <li>Interleaves static levels and wall levels: <code>getLevels()</code></li>
+            <li>Reads global <code>window.LEVELS</code>, <code>window.WALL_LEVELS</code></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="file">
+        <div class="path"><a href="game.js">game.js</a></div>
+        <div class="desc">
+          <div>Core game loop, physics, modes and HUD.</div>
+          <ul>
+            <li>Main loop: <code>loop()</code>; update and render orchestration</li>
+            <li>Modes: Normal (<code>startLevel()</code>), Infinite (<code>startInfinite()</code>, <code>generateInfiniteChunk()</code>), Infinite Walls (<code>startInfiniteWalls()</code>, <code>generateInfiniteWallsChunk()</code>)</li>
+            <li>Player physics: gravity, move, jump; wall slide/jump; coyote/buffer</li>
+            <li>HUD: power-up badges; bird stamina wheel</li>
+            <li>Syncs UI state for shop; exposes <code>window.LEVELS</code>, <code>window.WALL_LEVELS</code>, <code>window.CURRENT_SKIN</code></li>
+            <li>Keydown handling including shop navigation</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="file">
+        <div class="path"><a href="shop.js">shop.js</a> (legacy)</div>
+        <div class="desc">
+          <div>Older shop module (superseded by <code>menu/ui.js</code>).</div>
+          <ul>
+            <li>May still contain <code>buyOrEquipSkin()</code> and an earlier <code>drawShop()</code></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="file">
+        <div class="path"><a href="index.html">index.html</a></div>
+        <div class="desc">
+          <div>Bootstraps the game.</div>
+          <ul>
+            <li>Loads: <code>rendering.js</code>, <code>movement.js</code>, <code>menu/ui.js</code>, <code>levels.js</code>, <code>game.js</code></li>
+            <li>Canvas and on-screen controls</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="file">
+        <div class="path"><a href="style.css">style.css</a></div>
+        <div class="desc">
+          <div>Styles for layout and mobile control buttons.</div>
+        </div>
+      </div>
+
+    </section>
+
+    <section class="funcs">
+      <h2>Key Functions Quick List</h2>
+      <ul>
+        <li><code>drawPlayer()</code>, <code>drawSkyBackground()</code>, <code>roundRect()</code> — rendering</li>
+        <li><code>startLevel()</code>, <code>startInfinite()</code>, <code>startInfiniteWalls()</code> — mode starters</li>
+        <li><code>generateInfiniteChunk()</code>, <code>generateInfiniteWallsChunk()</code> — procedural generation</li>
+        <li><code>buyOrEquipSkin()</code>, <code>buyUpgradeStamina()</code>, <code>drawShop()</code> — shop/upgrade UI</li>
+        <li><code>getLevels()</code> — levels assembly</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>
