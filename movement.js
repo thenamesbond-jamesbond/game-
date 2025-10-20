@@ -21,6 +21,7 @@
     const leftBtn = document.getElementById('btn-left');
     const rightBtn = document.getElementById('btn-right');
     const jumpBtn = document.getElementById('btn-jump');
+    const shopBtn = document.getElementById('btn-shop');
     function attach(btn, keyDown) {
       if (!btn) return;
       const down = (ev) => { ev.preventDefault(); keys.add(keyDown); btn.classList.add('active'); btn.setPointerCapture && btn.setPointerCapture(ev.pointerId || 1); };
@@ -39,6 +40,10 @@
       jumpBtn.addEventListener('pointerup', up, { passive: false });
       jumpBtn.addEventListener('pointercancel', up, { passive: false });
       jumpBtn.addEventListener('pointerleave', up, { passive: false });
+    }
+    if (shopBtn) {
+      const click = (ev) => { ev.preventDefault(); if (window && typeof window.toggleShop === 'function') window.toggleShop(); };
+      shopBtn.addEventListener('pointerdown', click, { passive: false });
     }
   }
   window.bindMobileControls = bindMobileControls;

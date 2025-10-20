@@ -273,6 +273,36 @@
       return;
     }
 
+    // If shop is open, handle navigation FIRST and exit
+    if (shopOpen) {
+      const TAB_COUNT = 3;
+      if (e.key === 'ArrowLeft') { shopTab = (shopTab - 1 + TAB_COUNT) % TAB_COUNT; if (typeof window!=='undefined') window.shopTab = shopTab; return; }
+      if (e.key === 'ArrowRight') { shopTab = (shopTab + 1) % TAB_COUNT; if (typeof window!=='undefined') window.shopTab = shopTab; return; }
+      if (shopTab === 0) {
+        if (e.key === 'ArrowUp') { skinSel = (skinSel - 1 + skins.length) % skins.length; if (typeof window!=='undefined') window.skinSel = skinSel; return; }
+        if (e.key === 'ArrowDown') { skinSel = (skinSel + 1) % skins.length; if (typeof window!=='undefined') window.skinSel = skinSel; return; }
+        if (e.key === 'PageUp') { skinSel = Math.max(0, skinSel - 5); if (typeof window!=='undefined') window.skinSel = skinSel; return; }
+        if (e.key === 'PageDown') { skinSel = Math.min(skins.length - 1, skinSel + 5); if (typeof window!=='undefined') window.skinSel = skinSel; return; }
+        if (e.key === 'Home') { skinSel = 0; if (typeof window!=='undefined') window.skinSel = skinSel; return; }
+        if (e.key === 'End') { skinSel = skins.length - 1; if (typeof window!=='undefined') window.skinSel = skinSel; return; }
+        if (e.key === 'Enter' || e.key === ' ') { buyOrEquipSkin(skinSel); return; }
+      } else if (shopTab === 1) {
+        if (e.key === 'ArrowUp') { modeSel = (modeSel - 1 + modes.length) % modes.length; if (typeof window!=='undefined') window.modeSel = modeSel; return; }
+        if (e.key === 'ArrowDown') { modeSel = (modeSel + 1) % modes.length; if (typeof window!=='undefined') window.modeSel = modeSel; return; }
+        if (e.key === 'Home') { modeSel = 0; if (typeof window!=='undefined') window.modeSel = modeSel; return; }
+        if (e.key === 'End') { modeSel = modes.length - 1; if (typeof window!=='undefined') window.modeSel = modeSel; return; }
+        if (e.key === 'Enter' || e.key === ' ') { selectMode(modeSel); return; }
+      } else if (shopTab === 2) {
+        if (typeof window.upgradeSel !== 'number') window.upgradeSel = 0;
+        const optCount = 1; // stamina only
+        if (e.key === 'ArrowUp') { window.upgradeSel = (window.upgradeSel - 1 + optCount) % optCount; return; }
+        if (e.key === 'ArrowDown') { window.upgradeSel = (window.upgradeSel + 1) % optCount; return; }
+        if (e.key === 'Enter' || e.key === ' ') { if (typeof window.buyUpgradeStamina === 'function' && window.upgradeSel === 0) window.buyUpgradeStamina(); return; }
+      }
+      if (e.key === 'Escape' || e.key === 'p' || e.key === 'P') { shopOpen = false; return; }
+      return;
+    }
+
     // (removed) Quick Walls mode advance on key '2'
 
     // Quick jump to Level 17 (index 16) in Normal mode
@@ -307,7 +337,7 @@
       }
       return;
     }
-    // Builder controls when playing (not shop)
+    // Builder controls when shop is closed
     if (!shopOpen) {
       if ((e.key === 'q' || e.key === 'Q') && builderCharges > 0) {
         // place a small block aligned to 20px grid near player feet
@@ -337,41 +367,18 @@
         }
       }
     }
-    if (!shopOpen) return;
-    // While shop is open, handle navigation
-    const TAB_COUNT = 3;
-    if (e.key === 'ArrowLeft') shopTab = (shopTab - 1 + TAB_COUNT) % TAB_COUNT;
-    if (e.key === 'ArrowRight') shopTab = (shopTab + 1) % TAB_COUNT;
-    if (shopTab === 0) {
-      if (e.key === 'ArrowUp') skinSel = (skinSel - 1 + skins.length) % skins.length;
-      if (e.key === 'ArrowDown') skinSel = (skinSel + 1) % skins.length;
-      if (e.key === 'PageUp') skinSel = Math.max(0, skinSel - 5);
-      if (e.key === 'PageDown') skinSel = Math.min(skins.length - 1, skinSel + 5);
-      if (e.key === 'Home') skinSel = 0;
-      if (e.key === 'End') skinSel = skins.length - 1;
-      if (e.key === 'Enter' || e.key === ' ') buyOrEquipSkin(skinSel);
-    } else if (shopTab === 1) {
-      if (e.key === 'ArrowUp') modeSel = (modeSel - 1 + modes.length) % modes.length;
-      if (e.key === 'ArrowDown') modeSel = (modeSel + 1) % modes.length;
-      if (e.key === 'Home') modeSel = 0;
-      if (e.key === 'End') modeSel = modes.length - 1;
-      if (e.key === 'Enter' || e.key === ' ') selectMode(modeSel);
-    } else if (shopTab === 2) {
-      // Upgrades tab
-      if (typeof window.upgradeSel !== 'number') window.upgradeSel = 0;
-      const optCount = 1; // only stamina for now
-      if (e.key === 'ArrowUp') window.upgradeSel = (window.upgradeSel - 1 + optCount) % optCount;
-      if (e.key === 'ArrowDown') window.upgradeSel = (window.upgradeSel + 1) % optCount;
-      if (e.key === 'Enter' || e.key === ' ') {
-        if (typeof window.buyUpgradeStamina === 'function' && window.upgradeSel === 0) window.buyUpgradeStamina();
-      }
-    }
-    if (e.key === 'Escape' || e.key === 'p' || e.key === 'P') { shopOpen = false; return; }
-    return;
+    // (shop handling moved earlier)
   });
 
   addEventListener('mousedown', () => { if (onTitle) startFromTitle(); });
   addEventListener('touchstart', () => { if (onTitle) startFromTitle(); }, { passive: true });
+
+  // Mobile/UI helpers to toggle shop
+  if (typeof window !== 'undefined') {
+    window.toggleShop = function() { if (!onTitle) shopOpen = !shopOpen; };
+    window.openShop = function() { if (!onTitle) shopOpen = true; };
+    window.closeShop = function() { shopOpen = false; };
+  }
 
   // Move selectMode outside of the keydown handler
   function selectMode(i) {

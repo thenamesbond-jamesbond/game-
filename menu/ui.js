@@ -1,23 +1,42 @@
  (function(){
    function buyOrEquipSkin(i) {
-     const s = window.skins ? window.skins[i] : null;
-     if (!s) return;
-     if (s.owned) {
-       window.selectedSkinIndex = i;
-       return;
-     }
-     if (window.coinsCollected >= s.cost) {
-       window.coinsCollected -= s.cost;
-       s.owned = true;
-       window.selectedSkinIndex = i;
-     }
-   }
-   window.buyOrEquipSkin = buyOrEquipSkin;
+    const s = window.skins ? window.skins[i] : null;
+    if (!s) return;
+    if (s.owned) {
+      window.selectedSkinIndex = i;
+      return;
+    }
+    if (window.coinsCollected >= s.cost) {
+      window.coinsCollected -= s.cost;
+      s.owned = true;
+      window.selectedSkinIndex = i;
+    }
+    try { console.debug('[shop] buyOrEquipSkin', { index: i, key: s && s.key, owned: s && s.owned, coins: window.coinsCollected }); } catch (_) {}
+  }
+  window.buyOrEquipSkin = buyOrEquipSkin;
 
    function drawShop() {
      const canvas = document.getElementById('game');
      const ctx = canvas.getContext('2d');
      const W = canvas.width, H = canvas.height;
+     try {
+      const now = performance.now();
+      const snap = {
+        tab: window.shopTab,
+        skinSel: window.skinSel,
+        modeSel: window.modeSel,
+        coins: window.coinsCollected,
+        stamina: (window.upgrades && window.upgrades.staminaLevel) || 0,
+      };
+      const prev = window.__shopLogSnap;
+      const lastAt = window.__shopLogLastAt || 0;
+      const changed = !prev || prev.tab !== snap.tab || prev.skinSel !== snap.skinSel || prev.modeSel !== snap.modeSel || prev.coins !== snap.coins || prev.stamina !== snap.stamina;
+      if (changed || (now - lastAt) > 600) {
+        console.debug('[shop] drawShop', snap);
+        window.__shopLogSnap = snap;
+        window.__shopLogLastAt = now;
+      }
+    } catch (_) {}
      ctx.fillStyle = 'rgba(0,0,0,0.55)';
      ctx.fillRect(0, 0, W, H);
      const vg = ctx.createRadialGradient(W/2, H/2, Math.min(W,H)*0.25, W/2, H/2, Math.max(W,H)*0.6);
@@ -216,6 +235,7 @@
        window.coinsCollected -= cost;
        window.upgrades.staminaLevel = Math.min(maxLvl, lvl + 1);
      }
+     try { console.debug('[shop] buyUpgradeStamina', { oldLevel: lvl, newLevel: window.upgrades.staminaLevel, coins: window.coinsCollected }); } catch (_) {}
    }
    window.buyUpgradeStamina = buyUpgradeStamina;
  })();
