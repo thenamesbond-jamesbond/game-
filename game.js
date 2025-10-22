@@ -2,15 +2,55 @@
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
 
+  // Minimal on-screen error overlay (useful on mobile without devtools)
+  function showFatal(msg) {
+    try {
+      let el = document.getElementById('errorOverlay');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'errorOverlay';
+        el.style.position = 'fixed';
+        el.style.left = '0';
+        el.style.top = '0';
+        el.style.right = '0';
+        el.style.padding = '10px 12px';
+        el.style.background = 'rgba(180,0,0,0.85)';
+        el.style.color = '#fff';
+        el.style.font = '14px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
+        el.style.zIndex = '99999';
+        document.body.appendChild(el);
+      }
+      el.textContent = 'Error: ' + msg;
+    } catch(_) {}
+  }
+  window.addEventListener('error', (e) => { if (e && e.message) showFatal(e.message); });
+  window.addEventListener('unhandledrejection', (e) => {
+    const r = e && (e.reason && (e.reason.message || e.reason)) || 'Unknown rejection';
+    showFatal(String(r));
+  });
+
   // Mobile/tablet: responsive canvas scaling to fit screen while preserving aspect
   const BASE_W = canvas.width;
   const BASE_H = canvas.height;
+  let DPR = 1;
+  let CSS_SCALE = 1;
   function updateCanvasScale() {
     const vw = window.innerWidth || document.documentElement.clientWidth;
     const vh = window.innerHeight || document.documentElement.clientHeight;
     const scale = Math.max(0.5, Math.min(vw / BASE_W, vh / BASE_H));
-    canvas.style.width = Math.round(BASE_W * scale) + 'px';
-    canvas.style.height = Math.round(BASE_H * scale) + 'px';
+    const dpr = Math.max(1, Math.floor(window.devicePixelRatio || 1));
+    DPR = dpr;
+    CSS_SCALE = scale;
+    // CSS size for layout
+    const cssW = Math.round(BASE_W * scale);
+    const cssH = Math.round(BASE_H * scale);
+    canvas.style.width = cssW + 'px';
+    canvas.style.height = cssH + 'px';
+    // Backing store size for crisp rendering
+    const backW = Math.max(1, Math.round(cssW * dpr));
+    const backH = Math.max(1, Math.round(cssH * dpr));
+    if (canvas.width !== backW) canvas.width = backW;
+    if (canvas.height !== backH) canvas.height = backH;
   }
   // --- Infinite Walls (vertical) generator and starters ---
   function startInfiniteWalls() {
@@ -21,17 +61,27 @@
     // Auto-select Bird skin for Infinite Walls (visual only; ownership unaffected)
     try {
       const birdIndex = skins.findIndex(s => s.key === 'bird');
-      if (birdIndex >= 0) { selectedSkinIndex = birdIndex; }
+      if (birdIndex >= 0) {
+        selectedSkinIndex = birdIndex;
+        if (typeof window !== 'undefined') window.selectedSkinIndex = selectedSkinIndex;
+      }
     } catch(_) {}
-    // Place player near bottom center
-    player.x = W/2 - player.w/2;
-    player.y = H - 80;
+    // Place a centered start platform and spawn player on it (middle)
+    const sWw = 120; const sYw = H - 120; const sXw = Math.round(W/2 - sWw/2);
+    player.x = sXw + Math.round(sWw/2 - player.w/2);
+    player.y = sYw - player.h - 1;
     player.vx = 0; player.vy = 0; player.onGround = false;
     cameraX = 0; cameraY = player.y - 200;
-    // Base floor
-    infWallsPlatforms.push({ x: 0, y: H - 20, w: W, h: 40, t: 'normal' });
-    wallsLastPlatY = H - 80;
-    wallsLastPlatX = W/2 - 60;
+    // Base floor (death if you fall) and visible start block
+    infWallsPlatforms.push({ x: 0, y: H - 20, w: W, h: 40, t: 'death' });
+    infWallsPlatforms.push({ x: sXw, y: sYw, w: sWw, h: 16, t: 'start' });
+    infWallsCoins = [];
+    // Kill walls on the far left and right so leaving the corridor is fatal
+    // Very tall rects to cover current and future camera space
+    infWallsPlatforms.push({ x: -200, y: -100000, w: 200, h: 200000, t: 'death' });
+    infWallsPlatforms.push({ x: W,    y: -100000, w: 200, h: 200000, t: 'death' });
+    wallsLastPlatY = sYw;
+    wallsLastPlatX = sXw;
     infWallsSpawnY = H - 240; // start generating upwards from here (decreasing y)
     // seed a couple ledges
     infWallsPlatforms.push({ x: wallsLastPlatX - 120, y: H - 140, w: 100, h: 16, t: 'normal' });
@@ -54,6 +104,20 @@
     const stickyLeft = Math.random() < 0.5;
     infWallsPlatforms.push({ x: leftX - colW, y: endY, w: colW, h: startY - endY, t: stickyLeft ? 'sticky' : 'normal' });
     infWallsPlatforms.push({ x: rightX,      y: endY, w: colW, h: startY - endY, t: stickyLeft ? 'normal' : 'sticky' });
+    // Coins on inner faces of columns
+    const colCoins = 2 + Math.round(Math.random());
+    for (let j=0;j<colCoins;j++) {
+      const frac = (j+1) / (colCoins+1);
+      const y = Math.round(endY + frac * (startY - endY));
+      // Slight random bob within local chunk
+      const ry = y + Math.round((Math.random()-0.5) * 12);
+      // Left inner face is at x = leftX; offset inward (toward corridor)
+      const lxCoin = Math.round(leftX + 12);
+      // Right inner face is at x = rightX + colW; inner edge at rightX; offset inward
+      const rxCoin = Math.round(rightX - 12);
+      infWallsCoins.push({ x: lxCoin, y: ry, r: 10, taken: false, float: Math.random()*Math.PI*2 });
+      infWallsCoins.push({ x: rxCoin, y: ry, r: 10, taken: false, float: Math.random()*Math.PI*2 });
+    }
     // Add 1-2 horizontal ledges between columns
     const nLedges = 1 + Math.round(Math.random());
     for (let i=0;i<nLedges;i++) {
@@ -66,21 +130,30 @@
       infWallsPlatforms.push(plat);
       wallsLastPlatY = ly;
       wallsLastPlatX = plat.x;
+      // Emit 1-3 coins above this ledge
+      const cN = 1 + Math.floor(Math.random()*3);
+      for (let k=0;k<cN;k++) {
+        const cx = plat.x + (k+1) * (plat.w/(cN+1));
+        const cy = plat.y - 24 - Math.random()*10;
+        infWallsCoins.push({ x: Math.round(cx), y: Math.round(cy), r: 10, taken: false, float: Math.random()*Math.PI*2 });
+      }
     }
     // Advance spawn pointer upwards (towards smaller y)
     infWallsSpawnY = endY;
   }
   addEventListener('resize', updateCanvasScale);
   addEventListener('orientationchange', () => setTimeout(updateCanvasScale, 50));
+  addEventListener('load', () => setTimeout(updateCanvasScale, 0));
   updateCanvasScale();
 
-  const W = canvas.width;
-  const H = canvas.height;
+  const W = BASE_W; // keep logical game size constant
+  const H = BASE_H;
 
   // Game State
   let levelIndex = 0;
   let lives = 3;
   let won = false;
+  let debugPaused = false;
   let coinsCollected = 0;
   let totalCoins = 0;
   let shopOpen = false;
@@ -162,6 +235,19 @@
     const slideCap = player.wallIsSticky ? WALL_SLIDE_MAX_FALL_STICKY : WALL_SLIDE_MAX_FALL;
     if (!player.onGround && (player.isTouchingWall || wallCoyoteFrames > 0) && wantSlide && wallLockFrames === 0 && player.vy > slideCap) {
       player.vy = slideCap;
+    }
+    // Bird stamina regeneration while wall sliding (slow regen)
+    if (!player.onGround) {
+      const isBird = (skins[selectedSkinIndex] && skins[selectedSkinIndex].key === 'bird');
+      const slidingWall = (player.isTouchingWall || wallCoyoteFrames > 0) && wantSlide && wallLockFrames === 0;
+      if (isBird && slidingWall) {
+        const full = 7000 + (upgrades.staminaLevel||0) * 2000;
+        const target = now + full; // max allowed end time
+        const regenPerSec = 600; // ms per second regained while sliding
+        const perFrame = regenPerSec * (1/60);
+        const base = Math.max(birdFlightUntil, now); // don't go backward
+        birdFlightUntil = Math.min(target, base + perFrame);
+      }
     }
 
     // X
@@ -266,6 +352,9 @@
   addEventListener('keydown', (e) => {
     if (["ArrowLeft","ArrowRight","ArrowUp","ArrowDown"," ","a","d","w","A","D","W","r","R","p","P","Enter"].includes(e.key)) e.preventDefault();
     keys.add(e.key);
+
+    // Debug pause toggle (O)
+    if (e.key === 'o' || e.key === 'O') { debugPaused = !debugPaused; return; }
 
     // Shop toggle and navigation (edge-triggered on keydown)
     if (e.key === 'p' || e.key === 'P') {
@@ -568,6 +657,7 @@
   let wallsLastPlatX = 0;
   const INF_WALLS_CHUNK_H = 220;
   let infCoins = [];
+  let infWallsCoins = [];
   let infSpawnX = 0;
   let lastPlatX = 0;
   let lastPlatY = 320;
@@ -1011,7 +1101,7 @@
   let levelCoins = [];
 
   // Precompute total coins across all levels
-  totalCoins = LEVELS.reduce((sum, L) => sum + (L.coins?.length || 0), 0);
+  totalCoins = LEVELS.reduce((sum, L) => sum + ((L.coins && L.coins.length) || 0), 0);
 
   // Generate random power-ups for Normal levels that don't specify them
   function generateRandomLevelPowerups(L) {
@@ -1058,10 +1148,10 @@
     player.onGround = false;
     // reset temporary boosts
     speedUntil = 0; superjumpUntil = 0;
-    airJumpsLeft = (skins[selectedSkinIndex]?.key === 'penguin') ? 1 : 0;
+    airJumpsLeft = (skins[selectedSkinIndex] && skins[selectedSkinIndex].key === 'penguin') ? 1 : 0;
     levelStartAt = performance.now();
     // Recompute total coins for current mode and fill runtime coins list
-    totalCoins = levelsNow.reduce((sum, L2) => sum + (L2.coins?.length || 0), 0);
+    totalCoins = levelsNow.reduce((sum, L2) => sum + ((L2.coins && L2.coins.length) || 0), 0);
     // Fill runtime coins list
     levelCoins = (L.coins || []).map(c => ({...c, taken:false, float: Math.random()*Math.PI*2 }));
     // Power-ups for this level (auto-generate if not provided)
@@ -1110,9 +1200,10 @@
     infCoins = [];
     infSpawnX = 0;
     infPlatforms.push({ x: -200, y: 420, w: 1200, h: 30, t: 'normal' });
-    const sW = 120; const sY = 320; const sX = Math.round(W/2 - sW/2);
+    // Start block on the LEFT side for Infinite
+    const sW = 120; const sY = 320; const sX = 20;
     infPlatforms.push({ x: sX, y: sY, w: sW, h: INF_PLATFORM_HEIGHT, t: 'start' });
-    player.x = sX + 10; player.y = sY - player.h - 1;
+    player.x = sX + Math.round(sW/2 - player.w/2); player.y = sY - player.h - 1;
     infSpawnX = 0;
     lastPlatX = sX; lastPlatY = sY; lastPlatW = sW;
     
@@ -1449,9 +1540,10 @@
       cameraY = Math.min(cameraY, targetY);
       // Spawn more above
       while (infWallsSpawnY > cameraY - 600) generateInfiniteWallsChunk();
-      // Cull below camera
+      // Cull far below camera (keep coins above camera so they remain for later)
       const cullY = cameraY + H + 500;
       infWallsPlatforms = infWallsPlatforms.filter(p => (p.y) <= cullY);
+      if (infWallsCoins.length > 0) infWallsCoins = infWallsCoins.filter(c => (c.y <= cullY) && !c.taken);
     } else {
       cameraX = 0;
     }
@@ -1546,7 +1638,7 @@
       if (usingInfiniteWalls()) {
         airJumpsLeft = 2; // triple jump: 1 ground jump + 2 air jumps
       } else {
-        airJumpsLeft = (skins[selectedSkinIndex]?.key === 'penguin') ? 1 : 0;
+        airJumpsLeft = (skins[selectedSkinIndex] && skins[selectedSkinIndex].key === 'penguin') ? 1 : 0;
       }
       birdFlightUntil = 0; // reset stamina on landing
     }
@@ -1589,15 +1681,19 @@
       lives -= 1;
       if (lives <= 0) {
         lives = 3;
-        if (usingInfinite()) startInfinite(); else startLevel(0);
+        if (usingInfinite()) startInfinite();
+        else if (usingInfiniteWalls()) startInfiniteWalls();
+        else startLevel(0);
       } else {
-        resetLevel();
+        if (usingInfinite()) startInfinite();
+        else if (usingInfiniteWalls()) startInfiniteWalls();
+        else resetLevel();
       }
       return;
     }
 
     // Power-up pickups
-    const pList = usingInfinite() ? infPowerups : levelPowerups;
+    const pList = usingInfinite() ? infPowerups : (usingInfiniteWalls() ? [] : levelPowerups);
     for (const p of pList) {
       if (p.taken) continue;
       const bx = p.x - (p.r||10), by = p.y - (p.r||10), bw = (p.r||10)*2, bh = (p.r||10)*2;
@@ -1656,7 +1752,7 @@
     prevJumpKey = jump;
 
     // Coin collection
-    const coinsList = usingInfinite() ? infCoins : levelCoins;
+    const coinsList = usingInfinite() ? infCoins : (usingInfiniteWalls() ? infWallsCoins : levelCoins);
     for (const c of coinsList) {
       if (c.taken) continue;
       const bx = c.x - c.r, by = c.y - c.r, bw = c.r * 2, bh = c.r * 2;
@@ -1713,7 +1809,11 @@
   }
 
   function render() {
-    // Clear
+    // If canvas backing store hasn't been sized yet (mobile first paint), try again next frame
+    if (canvas.width === 0 || canvas.height === 0) { updateCanvasScale(); return; }
+    // Apply DPR-aware transform and clear
+    ctx.setTransform(CSS_SCALE * DPR, 0, 0, CSS_SCALE * DPR, 0, 0);
+    ctx.imageSmoothingEnabled = true;
     ctx.clearRect(0, 0, W, H);
 
     // Background
@@ -1753,24 +1853,43 @@
 
     // Coins
     const t = performance.now() / 1000;
-    const coinsListR = usingInfinite() ? infCoins : (usingInfiniteWalls() ? [] : levelCoins);
+    const coinsListR = usingInfinite() ? infCoins : (usingInfiniteWalls() ? infWallsCoins : levelCoins);
+    const drawCamXc = usingInfinite() ? cameraX : 0;
+    const drawCamYc = usingInfiniteWalls() ? cameraY : 0;
     for (const c of coinsListR) {
       if (c.taken) continue;
       const bob = Math.sin(t * 3 + c.float) * 2;
       const r = c.r;
+      const cx = c.x - drawCamXc;
+      const cy = c.y - drawCamYc + bob;
+      const baseColor = (typeof coinColor !== 'undefined') ? coinColor : '#ffd166';
+      const shineColor = (typeof coinShineColor !== 'undefined') ? coinShineColor : '#fff3b0';
+      // glow
+      ctx.save();
+      ctx.globalAlpha = 0.25;
+      const glowGrad = ctx.createRadialGradient(cx, cy, r*0.6, cx, cy, r*1.8);
+      glowGrad.addColorStop(0, baseColor);
+      glowGrad.addColorStop(1, 'rgba(255, 209, 102, 0)');
+      ctx.fillStyle = glowGrad;
+      ctx.beginPath(); ctx.arc(cx, cy, r*1.8, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
       // coin body
       ctx.beginPath();
-      ctx.arc(c.x - cameraX, c.y + bob, r, 0, Math.PI * 2);
-      ctx.fillStyle = coinColor;
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      const bodyGrad = ctx.createRadialGradient(cx - r*0.3, cy - r*0.4, r*0.1, cx, cy, r);
+      bodyGrad.addColorStop(0, '#fff7d6');
+      bodyGrad.addColorStop(0.4, baseColor);
+      bodyGrad.addColorStop(1, '#e6a84d');
+      ctx.fillStyle = bodyGrad;
       ctx.fill();
       // shine
       ctx.beginPath();
-      ctx.arc((c.x - cameraX) - r*0.3, c.y - r*0.2 + bob, r*0.35, 0, Math.PI * 2);
-      ctx.fillStyle = coinShineColor;
+      ctx.arc(cx - r*0.35, cy - r*0.28, r*0.38, 0, Math.PI * 2);
+      ctx.fillStyle = shineColor;
       ctx.fill();
       // outline
       ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 1.8;
       ctx.stroke();
     }
 
@@ -1992,7 +2111,7 @@
     if (nowHud < speedUntil) drawHudBadge('Speed', speedUntil - nowHud, '#4cc9f0');
     if (nowHud < superjumpUntil) drawHudBadge('Super Jump', superjumpUntil - nowHud, '#90be6d');
     // Bird stamina wheel HUD (top-left corner)
-    if (skins[selectedSkinIndex]?.key === 'bird') {
+    if (skins[selectedSkinIndex] && skins[selectedSkinIndex].key === 'bird') {
       const remain = Math.max(0, birdFlightUntil - performance.now());
       const full = 7000 + (upgrades.staminaLevel||0) * 2000;
       const frac = Math.max(0, Math.min(1, remain / full));
@@ -2072,10 +2191,24 @@
   }
 
   function loop() {
-    if (!won && !shopOpen) {
-      if (onTitle) titleUpdate(); else update();
+    if (!debugPaused) {
+      if (!won && !shopOpen) {
+        if (onTitle) titleUpdate(); else update();
+      }
+      render();
+    } else {
+      // Render current frame and overlay paused state
+      render();
+      ctx.save();
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#e8e9f3';
+      ctx.font = '20px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('Paused (press O to toggle)', W/2, H/2);
+      ctx.textAlign = 'start';
+      ctx.restore();
     }
-    render();
     requestAnimationFrame(loop);
   }
 
